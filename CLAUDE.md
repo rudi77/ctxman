@@ -1,5 +1,9 @@
 # CLAUDE.md — ctxman
 
+Read the following file for additional important information:
+- [CLAUDE_BEHAVIORAL.md](CLAUDE_BEHAVIORAL.md)
+
+
 > Architektur- und Konventions-Notizen für alle Agents, die an ctxman arbeiten.
 > **Die Spec ist Vertrag:** `docs/ctxman-spec.md` (v0.2) definiert verbindlich, was gebaut wird.
 > Bei jedem Task zuerst die für das Workpaket maßgeblichen Spec-Abschnitte lesen und exakt
