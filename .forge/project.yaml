@@ -1,0 +1,106 @@
+# ctxman — forge project specification
+# Diese Datei ist der Vertrag zwischen Operator (Rudi) und forge.
+# Die fachliche Wahrheit für die Implementierung ist docs/ctxman-spec.md (v0.2).
+
+spec_version: "1.0"
+name: ctxman
+language_stack: [csharp]
+frameworks: [aspnetcore, efcore, xunit]
+
+# === SURFACES — was darf wie geändert werden ===
+surfaces:
+  source:
+    paths:
+      - "src/"
+    type: code
+    # Build wird im Eval gegated; dotnet build sprengt das 30s-Preflight-Budget,
+    # daher keine Guardrails hier.
+    guardrails: []
+
+  tests:
+    paths:
+      - "tests/"
+    type: code
+    guardrails: []
+
+  solution:
+    # Agent muss neue Projekte zur Solution hinzufügen können (dotnet sln add).
+    paths:
+      - "ctxman.sln"
+    type: text
+
+# === FORBIDDEN — Pfade, die forge NIE editiert ===
+forbidden:
+  - "docs/**"               # Die Spec ist Vertrag — forge ändert sie NIE
+  - ".forge/**"
+  - ".github/workflows/**"
+  - "CLAUDE.md"
+  - "README.md"
+  - "nuget.config"          # nur nuget.org; keine zusätzlichen Feeds durch Agents
+
+# === CAPABILITIES ===
+capabilities:
+  read: ["**/*"]
+  edit: ["{surfaces}"]
+  run:
+    - "dotnet *"
+    - "pwsh *"
+    - "powershell *"
+    - "cd *"
+  commit: true
+  open_pr: true
+  merge_pr: false           # hardcoded v1
+  push_to_main: false       # hardcoded v1
+  push_force: false
+  network_egress:
+    - "api.anthropic.com"
+    - "api.github.com"
+    - "api.nuget.org"       # NuGet-Restore in frischen Worktrees
+
+# === EVAL-SUITEN ===
+eval_suites:
+  quick:
+    cmd: "pwsh -NoProfile -File .forge/eval.ps1"
+    budget_s: 600
+    parses: scores_json
+
+# === GATES — harte Pass/Fail ===
+# pytest_pass_rate ist forge-generisch benannt; das Eval-Skript füllt den Key
+# mit der dotnet-test-Pass-Rate.
+gates:
+  - {kind: build_success,    threshold: 1.0, source: quick}
+  - {kind: pytest_pass_rate, threshold: 1.0, source: quick}
+  - {kind: llm_judge_score,  threshold: 0.8, source: quick}
+
+scores: []
+diagnostics: []
+
+# === JUDGE — Spec-Konformität fail-closed erzwingen ===
+judge:
+  enabled: true
+  model: opus
+  max_turns: 12             # Spec-Abgleich braucht mehr Reads als Default 6
+  threshold: 0.8
+  budget_s: 600
+
+# === COST-CAPS — Pflichtfelder; Subscription via Claude Code CLI, daher nominal-großzügig ===
+cost_caps:
+  per_generation_usd: 30.00
+  per_run_usd: 60.00
+  per_project_per_day_usd: 250.00
+  per_project_per_month_usd: 2000.00
+
+# === TRIGGERS ===
+triggers:
+  on_issue_label:
+    auto-feature:
+      strategy: sequential
+      model: opus
+      max_iterations: 3
+      agents: [architect, developer, tester, reviewer]
+
+# === RELEASE ===
+release:
+  conventional_commits: true
+  on_main_green: "off"
+  changelog: "CHANGELOG.md"
