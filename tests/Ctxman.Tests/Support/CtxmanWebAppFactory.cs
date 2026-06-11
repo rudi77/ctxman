@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using Ctxman.Api.Auth;
+using Ctxman.Core;
 using Ctxman.Core.Auth;
 using Ctxman.Core.Persistence;
 using Microsoft.AspNetCore.Hosting;
@@ -7,6 +8,7 @@ using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -30,11 +32,17 @@ public sealed class CtxmanWebAppFactory : WebApplicationFactory<Program>
 {
     private readonly Dictionary<string, string?> _settings = new();
     private readonly SqliteConnection _connection;
+    private readonly string _blobRoot;
 
     public CtxmanWebAppFactory()
     {
         _connection = new SqliteConnection("DataSource=:memory:");
         _connection.Open();
+
+        // Pro Factory-Instanz isoliertes Blob-Verzeichnis (Spec §7, Dev-Adapter). Eindeutig genug
+        // über die GUID des Connection-Objekts statt Date/Random im statischen Scope.
+        _blobRoot = Path.Combine(Path.GetTempPath(), "ctxman-test-blobs", Guid.NewGuid().ToString("n"));
+        _settings["blobstore:Root"] = _blobRoot;
     }
 
     /// <summary>Überschreibt eine Konfigurations-Einstellung (z. B. <c>auth:tenant_header</c>).</summary>
@@ -42,6 +50,20 @@ public sealed class CtxmanWebAppFactory : WebApplicationFactory<Program>
     {
         _settings[key] = value;
         return this;
+    }
+
+    /// <summary>
+    /// Test-only: liefert einen <see cref="CtxmanDbContext"/> für den angegebenen Tenant, gebunden an
+    /// DIESELBE offene SQLite-Verbindung wie der API-Host. Damit können Integrationstests den DB-Zustand
+    /// (z. B. server-vergebene <c>seq</c>, Segment-Anzahl, Idempotency-Records) nach einem HTTP-Request
+    /// direkt inspizieren. Reine Test-Infrastruktur; Program.cs/Produktionscode bleibt unberührt.
+    /// </summary>
+    public CtxmanDbContext CreateDbContext(string tenantId)
+    {
+        var options = new DbContextOptionsBuilder<CtxmanDbContext>()
+            .UseSqlite(_connection)
+            .Options;
+        return new CtxmanDbContext(options, new TenantContext { TenantId = tenantId });
     }
 
     /// <summary>
@@ -83,14 +105,14 @@ public sealed class CtxmanWebAppFactory : WebApplicationFactory<Program>
             }
         });
 
-        builder.ConfigureServices((context, services) =>
+        builder.ConfigureTestServices(services =>
         {
             // Npgsql-Registrierung des CtxmanDbContext entfernen und durch SQLite ersetzen.
             // Nur ein Provider darf pro Service-Provider registriert sein — daher alle von
             // AddDbContext erzeugten Options-/Konfigurations-Deskriptoren entfernen.
             RemoveDbContextRegistrations(services);
 
-            services.AddDbContext<CtxmanDbContext>(opts => opts.UseSqlite(_connection));
+            services.AddDbContext<CtxmanDbContext>(o => o.UseSqlite(_connection));
 
             // AuthOptions-Overrides aus den Test-Settings als PostConfigure anwenden. In minimal
             // hosting erfasst Program.Configure<AuthOptions> die Sektion gegen den
@@ -105,6 +127,29 @@ public sealed class CtxmanWebAppFactory : WebApplicationFactory<Program>
             // Test-only Probe-Endpoint NUR im Test-Host (nicht in Program.cs).
             services.AddSingleton<IStartupFilter, WhoAmIProbeStartupFilter>();
         });
+    }
+
+    /// <summary>
+    /// Erzeugt das Schema einmalig auf DERSELBEN offenen SQLite-Verbindung, die der API-Host für den
+    /// <see cref="CtxmanDbContext"/> nutzt (<c>UseSqlite(_connection)</c> in <see cref="ConfigureWebHost"/>).
+    /// Program.cs ruft bewusst kein EnsureCreated beim Start (Tests verwalten das Schema) — daher hier
+    /// nach dem Host-Build, sonst hätten die Integrationstests leere Tabellen. Reine Test-Infrastruktur.
+    ///
+    /// Ein eigenständiger, an dieselbe offene Verbindung gebundener SQLite-Context erzeugt das Schema —
+    /// es landet auf derselben In-Memory-DB, die der API-Host nutzt.
+    /// </summary>
+    protected override IHost CreateHost(IHostBuilder builder)
+    {
+        var host = base.CreateHost(builder);
+
+        var options = new DbContextOptionsBuilder<CtxmanDbContext>()
+            .UseSqlite(_connection)
+            .Options;
+
+        using var db = new CtxmanDbContext(options, new TenantContext { TenantId = "schema-setup" });
+        db.Database.EnsureCreated();
+
+        return host;
     }
 
     private void ApplyAuthOverrides(AuthOptions options)
@@ -131,17 +176,17 @@ public sealed class CtxmanWebAppFactory : WebApplicationFactory<Program>
             .Where(d =>
                 d.ServiceType == typeof(CtxmanDbContext)
                 || d.ServiceType == typeof(DbContextOptions<CtxmanDbContext>)
-                || d.ServiceType == typeof(DbContextOptions)
-                // Npgsql registriert seine Provider-Services über IDbContextOptionsConfiguration<T>.
-                || (d.ServiceType.IsGenericType
-                    && d.ServiceType.GetGenericTypeDefinition().FullName
-                        == "Microsoft.EntityFrameworkCore.IDbContextOptionsConfiguration`1"))
+                || d.ServiceType == typeof(DbContextOptions))
             .ToList();
 
         foreach (var descriptor in toRemove)
         {
             services.Remove(descriptor);
         }
+
+        // Npgsql registriert seine Provider-Konfiguration über IDbContextOptionsConfiguration<T>;
+        // wird das nicht entfernt, landen Npgsql- und SQLite-Provider auf demselben Options-Objekt.
+        services.RemoveAll<IDbContextOptionsConfiguration<CtxmanDbContext>>();
     }
 
     protected override void Dispose(bool disposing)
@@ -150,6 +195,17 @@ public sealed class CtxmanWebAppFactory : WebApplicationFactory<Program>
         if (disposing)
         {
             _connection.Dispose();
+            if (Directory.Exists(_blobRoot))
+            {
+                try
+                {
+                    Directory.Delete(_blobRoot, recursive: true);
+                }
+                catch (IOException)
+                {
+                    // Best-effort-Cleanup des Test-Blob-Verzeichnisses; Lecks im Temp sind unkritisch.
+                }
+            }
         }
     }
 }
