@@ -1,8 +1,13 @@
 using Ctxman.Api.Auth;
+using Ctxman.Api.Endpoints;
+using Ctxman.Api.Idempotency;
+using Ctxman.Api.Storage;
 using Ctxman.Core;
 using Ctxman.Core.Auth;
 using Ctxman.Core.Domain;
 using Ctxman.Core.Persistence;
+using Ctxman.Core.Storage;
+using Ctxman.Core.Tokenization;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 
@@ -26,6 +31,25 @@ builder.Services.AddDbContext<CtxmanDbContext>(opts =>
 // Spec §4.1: Default-Authorization erlaubt jede Aktion innerhalb des aufgelösten Tenants.
 builder.Services.AddSingleton<ICtxmanAuthorizationHandler, AllowAllWithinTenantAuthorizationHandler>();
 
+// Spec §4.4: Replay-/Store-Logik für den Idempotency-Key, geteilt von den mutierenden Endpunkten.
+builder.Services.AddScoped<IdempotencyService>();
+
+// Spec §8: konservativer Default-Token-Zähler (stateless ⇒ Singleton). Provider-genaue Zähler
+// sind eigene Registrierungen.
+builder.Services.AddSingleton<ITokenCounter, HeuristicTokenCounter>();
+
+// Spec §7: Filesystem-Blob-Adapter (Dev). Root aus Sektion `blobstore`; ohne Konfiguration ein
+// fester Default unter dem System-Temp-Pfad (keine Date/Random-APIs zur Startzeit).
+builder.Services.Configure<BlobStoreOptions>(builder.Configuration.GetSection("blobstore"));
+builder.Services.PostConfigure<BlobStoreOptions>(o =>
+{
+    if (string.IsNullOrWhiteSpace(o.Root))
+    {
+        o.Root = Path.Combine(Path.GetTempPath(), "ctxman-blobs");
+    }
+});
+builder.Services.AddSingleton<IBlobStore, FileSystemBlobStore>();
+
 // Wire-Format ist snake_case (CLAUDE.md): HealthzResponse.AuthMode -> "auth_mode".
 builder.Services.ConfigureHttpJsonOptions(o =>
     o.SerializerOptions.PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.SnakeCaseLower);
@@ -46,6 +70,15 @@ app.UseMiddleware<TenantResolutionMiddleware>();
 
 app.MapGet("/healthz", (IOptions<AuthOptions> options) =>
     Results.Ok(new HealthzResponse("ok", options.Value.Mode.ToWire())));
+
+// Spec §4.3: Session-Endpunkte (POST /v1/sessions, GET /v1/sessions/{sid}).
+app.MapSessionEndpoints();
+
+// Spec §4.3: Segment-Endpunkte (POST /v1/sessions/{sid}/segments — Single + Batch).
+app.MapSegmentEndpoints();
+
+// Spec §4.3 / §7: Blob-Endpunkt (POST /v1/sessions/{sid}/blobs — Streaming-Upload).
+app.MapBlobEndpoints();
 
 app.Run();
 

@@ -82,4 +82,15 @@ public sealed class Session
     /// den Konstruktor binden kann.
     /// </summary>
     public void AddFrame(Frame frame) => _frames.Add(frame);
+
+    /// <summary>
+    /// Erhöht <see cref="ContextVersion"/> um 1 und setzt <see cref="UpdatedAt"/> auf
+    /// <paramref name="now"/>. Einziger Ort, der die Monotonie der context_version garantiert
+    /// (Spec §4.4).
+    /// </summary>
+    public void IncrementVersion(DateTimeOffset now)
+    {
+        ContextVersion += 1; // Spec §4.4
+        UpdatedAt = now;
+    }
 }
