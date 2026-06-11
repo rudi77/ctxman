@@ -1,5 +1,6 @@
 using Ctxman.Api.Auth;
 using Ctxman.Api.Endpoints;
+using Ctxman.Api.Gc;
 using Ctxman.Api.Idempotency;
 using Ctxman.Api.Storage;
 using Ctxman.Core;
@@ -56,6 +57,19 @@ builder.Services.PostConfigure<BlobStoreOptions>(o =>
 });
 builder.Services.AddSingleton<IBlobStore, FileSystemBlobStore>();
 
+// Spec §8: Minor-GC läuft asynchron außerhalb des Request-Pfads — Channel-Queue (Singleton) +
+// Hosted-Service-Worker. Der Worker serialisiert pro session_id und setzt den Tenant-Scope selbst.
+builder.Services.AddSingleton<ChannelGcJobQueue>();
+builder.Services.AddSingleton<IGcJobQueue>(sp => sp.GetRequiredService<ChannelGcJobQueue>());
+builder.Services.AddHostedService<MinorGcWorker>();
+
+// Spec §7.1: Blob-Mark-and-Sweep als Hosted Service (Default täglich, pro Tenant, serialisiert).
+// TimeProvider als Clock-Abstraktion, damit Tests die Grace-Grenze deterministisch steuern können
+// (BlobSweeper ist auch direkt aufrufbar). TimeProvider.System ist der reale Default.
+builder.Services.AddSingleton(TimeProvider.System);
+builder.Services.AddSingleton<BlobSweeper>();
+builder.Services.AddHostedService<BlobSweepWorker>();
+
 // Wire-Format ist snake_case (CLAUDE.md): HealthzResponse.AuthMode -> "auth_mode".
 builder.Services.ConfigureHttpJsonOptions(o =>
     o.SerializerOptions.PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.SnakeCaseLower);
@@ -88,6 +102,15 @@ app.MapBlobEndpoints();
 
 // Spec §4.2 / §4.3: Render + Static-Epoch-Bump.
 app.MapRenderEndpoints();
+
+// Spec §4.3 / §8: GC-Trigger (POST /v1/sessions/{sid}/gc — minor | major, 202 { job_id }).
+app.MapGcEndpoints();
+
+// Spec §3.4 / §4.3: Page-Fault (GET /v1/sessions/{sid}/refs/{segment_id} — Lazy-Expansion).
+app.MapRefEndpoints();
+
+// Spec §4.3 / §6: Event-Outbox (GET /v1/sessions/{sid}/events?after_seq=… — Pull + SSE).
+app.MapEventEndpoints();
 
 app.Run();
 

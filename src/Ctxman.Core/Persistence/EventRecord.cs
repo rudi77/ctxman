@@ -17,8 +17,12 @@ public sealed class EventRecord
     /// <summary>Tenant-Isolation auf Zeilenebene (Spec §7 / §10); kommt nie aus dem Body.</summary>
     public required string TenantId { get; init; }
 
-    /// <summary>Session, zu der das Event gehört (Spec §4.3: events sind session-gescoped).</summary>
-    public required Ulid SessionId { get; init; }
+    /// <summary>
+    /// Session, zu der das Event gehört (Spec §4.3: events sind session-gescoped). Session-lose
+    /// Lifecycle-Events (verwaister <c>blob_swept</c>, §7.1) tragen <c>null</c>; <see cref="Seq"/>
+    /// ist pro Session für Session-Zeilen und pro Tenant über die <c>null</c>-Session-Partition.
+    /// </summary>
+    public Ulid? SessionId { get; init; }
 
     /// <summary>
     /// Event-Typ (Spec §6), z. B. <c>segment_appended</c>, <c>static_epoch_bumped</c>,

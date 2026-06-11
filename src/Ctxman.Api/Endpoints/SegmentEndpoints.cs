@@ -38,7 +38,70 @@ public static class SegmentEndpoints
     public static IEndpointRouteBuilder MapSegmentEndpoints(this IEndpointRouteBuilder app)
     {
         app.MapPost("/v1/sessions/{sid}/segments", AppendSegmentsAsync);
+        app.MapPost("/v1/sessions/{sid}/segments/{segid}/pin", PinSegmentAsync);
+        app.MapDelete("/v1/sessions/{sid}/segments/{segid}/pin", UnpinSegmentAsync);
         return app;
+    }
+
+    // Spec §4.3: POST .../pin ⇒ Segment.Pin() ⇒ 204. Static-Segment ⇒ 409 (I1).
+    private static Task<IResult> PinSegmentAsync(
+        string sid,
+        string segid,
+        CtxmanDbContext db,
+        CancellationToken ct) =>
+        SetPinnedAsync(sid, segid, pinned: true, db, ct);
+
+    // Spec §4.3: DELETE .../pin ⇒ Segment.Unpin() ⇒ 204. Static-Segment ⇒ 409 (I1).
+    private static Task<IResult> UnpinSegmentAsync(
+        string sid,
+        string segid,
+        CtxmanDbContext db,
+        CancellationToken ct) =>
+        SetPinnedAsync(sid, segid, pinned: false, db, ct);
+
+    private static async Task<IResult> SetPinnedAsync(
+        string sid,
+        string segid,
+        bool pinned,
+        CtxmanDbContext db,
+        CancellationToken ct)
+    {
+        if (!Ulid.TryParse(sid, out var sessionId) || !Ulid.TryParse(segid, out var segmentId))
+        {
+            // Ungültige ID kann nichts adressieren — wie unbekannt behandeln (kein Leak).
+            return Results.NotFound();
+        }
+
+        // Spec §10: globaler Query-Filter ⇒ unbekanntes/fremdes Segment liefert null ⇒ 404.
+        var segment = await db.Segments
+            .FirstOrDefaultAsync(s => s.Id == segmentId && s.SessionId == sessionId, ct);
+        if (segment is null)
+        {
+            return Results.NotFound();
+        }
+
+        try
+        {
+            // Spec §2.2 I1: Pin/Unpin auf einem Static-Segment ⇒ StaticRegionImmutableException ⇒ 409.
+            if (pinned)
+            {
+                segment.Pin();
+            }
+            else
+            {
+                segment.Unpin();
+            }
+        }
+        catch (StaticRegionImmutableException)
+        {
+            return Results.Json(
+                new { error = "Pin/unpin is not allowed on a static-region segment (Spec §2.2 I1)." },
+                statusCode: StatusCodes.Status409Conflict);
+        }
+
+        await db.SaveChangesAsync(ct);
+
+        return Results.NoContent();
     }
 
     private static async Task<IResult> AppendSegmentsAsync(

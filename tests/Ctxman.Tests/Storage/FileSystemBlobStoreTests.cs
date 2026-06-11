@@ -70,6 +70,62 @@ public sealed class FileSystemBlobStoreTests : IDisposable
         Assert.False(await _store.Exists("tenant-a", "0000000000000000000000000000000000000000000000000000000000000000", CancellationToken.None));
     }
 
+    [Fact]
+    public async Task List_ReturnsExactlyPutKeysWithSize()
+    {
+        var first = Encoding.UTF8.GetBytes("alpha");
+        var second = Encoding.UTF8.GetBytes("beta payload");
+
+        var blobA = await _store.Put("tenant-a", new MemoryStream(first), "text/plain", CancellationToken.None);
+        var blobB = await _store.Put("tenant-a", new MemoryStream(second), "text/plain", CancellationToken.None);
+
+        var listed = new List<Core.Storage.BlobInfo>();
+        await foreach (var info in _store.List("tenant-a", CancellationToken.None))
+        {
+            listed.Add(info);
+        }
+
+        Assert.Equal(2, listed.Count);
+        Assert.Equal(first.LongLength, listed.Single(i => i.Key == blobA.Key).SizeBytes);
+        Assert.Equal(second.LongLength, listed.Single(i => i.Key == blobB.Key).SizeBytes);
+    }
+
+    [Fact]
+    public async Task List_MissingTenant_IsEmpty()
+    {
+        var listed = new List<Core.Storage.BlobInfo>();
+        await foreach (var info in _store.List("no-such-tenant", CancellationToken.None))
+        {
+            listed.Add(info);
+        }
+
+        Assert.Empty(listed);
+    }
+
+    [Fact]
+    public async Task Delete_MakesExistsFalseAndRemovesFromList()
+    {
+        var bytes = Encoding.UTF8.GetBytes("to be deleted");
+        var blob = await _store.Put("tenant-a", new MemoryStream(bytes), "text/plain", CancellationToken.None);
+
+        await _store.Delete("tenant-a", blob.Key, CancellationToken.None);
+
+        Assert.False(await _store.Exists("tenant-a", blob.Key, CancellationToken.None));
+
+        var listed = new List<Core.Storage.BlobInfo>();
+        await foreach (var info in _store.List("tenant-a", CancellationToken.None))
+        {
+            listed.Add(info);
+        }
+        Assert.DoesNotContain(listed, i => i.Key == blob.Key);
+    }
+
+    [Fact]
+    public async Task Delete_NonExistentKey_DoesNotThrow()
+    {
+        await _store.Delete("tenant-a", "0000000000000000000000000000000000000000000000000000000000000000", CancellationToken.None);
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(_root))

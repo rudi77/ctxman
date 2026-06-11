@@ -1,8 +1,10 @@
 using System.Text;
 using System.Text.Json;
+using Ctxman.Api.Gc;
 using Ctxman.Api.Idempotency;
 using Ctxman.Core;
 using Ctxman.Core.Domain;
+using Ctxman.Core.Gc;
 using Ctxman.Core.Persistence;
 using Ctxman.Core.Rendering;
 using Ctxman.Core.Storage;
@@ -36,6 +38,7 @@ public static class RenderEndpoints
         ITenantContext tenant,
         ProviderAdapterRegistry adapters,
         IdempotencyService idempotency,
+        IGcJobQueue gcJobs,
         CancellationToken ct)
     {
         var turnAdvance = request.TurnAdvance ?? true;
@@ -102,24 +105,83 @@ public static class RenderEndpoints
 
         var now = DateTimeOffset.UtcNow;
 
-        if (turnAdvance)
-        {
-            session.AdvanceTurn(now);
-            session.IncrementVersion(now);
-        }
-
+        // Spec §6: Event-seq ist pro Session monoton (Outbox-Cursor) — MAX(seq)+1.
         var maxEventSeq = await db.Events
             .Where(ev => ev.SessionId == sessionId)
             .Select(ev => (long?)ev.Seq)
             .MaxAsync(ct);
         var nextEventSeq = (maxEventSeq ?? -1) + 1;
 
+        // Spec §3.1: Watermark-Aktionen relativ zum Budget B. soft/hard reihen einen GC-Job
+        // ein (async NACH dem Turn, daher erst NACH dem Commit enqueuen); emergency läuft
+        // synchron I/O-frei innerhalb dieses Requests und kann ein 413 erzwingen.
+        var pendingGcLevel = plan.WatermarkState switch
+        {
+            "soft" => (GcLevel?)GcLevel.Minor,
+            "hard" => GcLevel.Major,
+            _ => null,
+        };
+
+        // tokens_total wird nur im Emergency-Pfad nach der synchronen Eviction neu berechnet;
+        // ok/soft/hard melden die unveränderte Zahl aus dem Plan (Render-Output byte-stabil).
+        var reportedTokensTotal = plan.TokensTotal;
+        var watermarkEvents = new List<EventRecord>();
+
+        if (plan.WatermarkState == "emergency")
+        {
+            // Spec §3.1: synchrone Notfall-Minor-Collection — nur Clean-Page + TTL-Eviction,
+            // KEIN Blob-Write (IBlobStore.Put), KEIN LLM-Call. Mutiert die geladenen Segmente
+            // in-memory; persistiert wird über SaveChanges weiter unten.
+            var emergencyPlan = MinorCollector.CollectEmergencyNoIo(
+                segments, session.Policy, session.CurrentTurn);
+
+            // Spec §3.2.1 / §6: ein segment_evicted je Clean-Page-Segment.
+            foreach (var evicted in emergencyPlan.CleanPageEvicted)
+            {
+                watermarkEvents.Add(CreateSessionEvent(tenant, session.Id, "segment_evicted", new
+                {
+                    segment_id = evicted.Id.ToString(),
+                }, nextEventSeq++, now));
+            }
+
+            // Spec §3.2.3 / §6: ein unit_evicted je Unit (gekoppelte Unit ⇒ ein Event über beide Segmente).
+            foreach (var unit in emergencyPlan.UnitEvicted)
+            {
+                watermarkEvents.Add(CreateSessionEvent(tenant, session.Id, "unit_evicted", new
+                {
+                    unit_id = unit.UnitId,
+                    segment_ids = unit.Segments.Select(s => s.Id.ToString()).ToArray(),
+                }, nextEventSeq++, now));
+            }
+
+            // Spec §3.1: tokens_total aus den verbleibenden lebenden Segmenten neu berechnen
+            // (render-eligible = live | externalized; mirror RenderPlanner.TokensTotal).
+            reportedTokensTotal = segments
+                .Where(s => s.State is SegmentState.Live or SegmentState.Externalized)
+                .Sum(s => s.Tokens);
+
+            // 413-Bedingung (Operator-Entscheidung): immer noch ≥ vollem Budget B (NICHT der
+            // 0.95·B-Schwelle) ⇒ retrybarer 413, KEIN turn_advance/Versions-Bump committen.
+            if (reportedTokensTotal >= session.Policy.BudgetTokens)
+            {
+                return Results.Json(
+                    new { error = "Budget exceeded after emergency eviction; retry shortly.", retryable = true },
+                    statusCode: StatusCodes.Status413PayloadTooLarge);
+            }
+        }
+
+        if (turnAdvance)
+        {
+            session.AdvanceTurn(now);
+            session.IncrementVersion(now);
+        }
+
         var renderPayload = JsonSerializer.Serialize(
             new
             {
                 context_version = session.ContextVersion,
                 static_epoch = session.StaticEpoch,
-                tokens_total = plan.TokensTotal,
+                tokens_total = reportedTokensTotal,
                 cache_prefix_hash = cachePrefixHash,
             },
             EventPayloadOptions);
@@ -131,11 +193,22 @@ public static class RenderEndpoints
             SessionId = session.Id,
             Type = "render_served",
             Payload = renderPayload,
-            Seq = nextEventSeq,
+            Seq = nextEventSeq++,
             CreatedAt = now,
         });
 
-        var response = BuildRenderResponse(session, plan, rendered);
+        // Spec §3.1: watermark_crossed dokumentiert die überschrittene Stufe (ok ⇒ kein Event).
+        if (plan.WatermarkState != "ok")
+        {
+            watermarkEvents.Add(CreateSessionEvent(tenant, session.Id, "watermark_crossed", new
+            {
+                level = plan.WatermarkState,
+            }, nextEventSeq++, now));
+        }
+
+        db.Events.AddRange(watermarkEvents);
+
+        var response = BuildRenderResponse(session, reportedTokensTotal, plan.WatermarkState, rendered);
 
         if (turnAdvance && idempotencyKey is not null)
         {
@@ -154,6 +227,13 @@ public static class RenderEndpoints
         else
         {
             await db.SaveChangesAsync(ct);
+        }
+
+        // Spec §3.1: async GC erst NACH erfolgreichem Commit enqueuen, damit der Worker nicht
+        // mit einem noch nicht committeten Turn rennt.
+        if (pendingGcLevel is { } gcLevel)
+        {
+            gcJobs.Enqueue(new MinorGcJob(tenant.TenantId, session.Id, Ulid.NewUlid(), gcLevel));
         }
 
         return Results.Ok(response);
@@ -333,9 +413,28 @@ public static class RenderEndpoints
         return Results.Ok(response);
     }
 
+    private static EventRecord CreateSessionEvent(
+        ITenantContext tenant,
+        Ulid sessionId,
+        string type,
+        object payload,
+        long seq,
+        DateTimeOffset now) =>
+        new()
+        {
+            Id = Ulid.NewUlid(),
+            TenantId = tenant.TenantId,
+            SessionId = sessionId,
+            Type = type,
+            Payload = JsonSerializer.Serialize(payload, EventPayloadOptions),
+            Seq = seq,
+            CreatedAt = now,
+        };
+
     private static RenderResponse BuildRenderResponse(
         Session session,
-        RenderPlanResult plan,
+        int tokensTotal,
+        string watermarkState,
         RenderResult rendered)
     {
         var cacheBreakpoints = rendered.CacheBreakpoints
@@ -355,8 +454,8 @@ public static class RenderEndpoints
             CacheBreakpoints: cacheBreakpoints,
             BuiltinTools: rendered.BuiltinTools,
             ContextVersion: session.ContextVersion,
-            TokensTotal: plan.TokensTotal,
-            WatermarkState: plan.WatermarkState);
+            TokensTotal: tokensTotal,
+            WatermarkState: watermarkState);
     }
 
     private static bool TryParseRole(string? wire, out Role? role, out string error)

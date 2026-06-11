@@ -142,7 +142,7 @@ public sealed class CtxmanDbContext : DbContext
 
             e.Property(ev => ev.Id).HasColumnName("id").HasConversion(CtxmanValueConverters.Ulid);
             e.Property(ev => ev.TenantId).HasColumnName("tenant_id");
-            e.Property(ev => ev.SessionId).HasColumnName("session_id").HasConversion(CtxmanValueConverters.Ulid);
+            e.Property(ev => ev.SessionId).HasColumnName("session_id").HasConversion(CtxmanValueConverters.NullableUlid);
             e.Property(ev => ev.Type).HasColumnName("type");
             e.Property(ev => ev.Payload).HasColumnName("payload");
             e.Property(ev => ev.Seq).HasColumnName("seq");
