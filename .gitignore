@@ -427,3 +427,9 @@ FodyWeavers.xsd
 *.msix
 *.msm
 *.msp
+
+# forge runtime state (lokal, nie committen — Konfiguration in .forge/ bleibt versioniert)
+.forge/worktrees/
+.forge/events.duckdb
+.forge/events.duckdb.wal
+.forge/blobs/
