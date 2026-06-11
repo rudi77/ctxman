@@ -433,3 +433,4 @@ FodyWeavers.xsd
 .forge/events.duckdb
 .forge/events.duckdb.wal
 .forge/blobs/
+.forge/logs/
