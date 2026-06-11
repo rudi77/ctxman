@@ -23,7 +23,9 @@ Akzeptanzkriterien kommen aus `docs/ctxman-spec.md` (v0.2) und der Akzeptanzkrit
 
 1. **Lies das `verified by`-Feld der relevanten Subtasks.** Dort steht, welche Test-Datei oder welches Eval-Kommando den Erfolg definiert.
 
-2. **Folge der existierenden Test-Pattern.** xUnit-Stil, `WebApplicationFactory<Program>` für API-Tests, SQLite/InMemory statt Postgres (siehe `CLAUDE.md` Teststrategie) — schaue dir 1-2 vergleichbare Test-Files an, bevor du anfängst.
+2. **Folge der existierenden Test-Pattern.** Memory nennt `CtxmanWebAppFactory`, SQLite
+   in-memory, Golden-Files unter `tests/Ctxman.Tests/Golden/`. Schaue dir nur 1 vergleichbares
+   Test-File an, wenn das Pattern aus Memory/Plan noch unklar ist.
 
 3. **Tests sind klein und präzise.** Ein Test pro Verhaltens-Aspekt. Beschreibender Name (`Append_ToStaticRegion_Returns409`, nicht `Test2`).
 

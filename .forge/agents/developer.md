@@ -23,9 +23,13 @@ Dieses Projekt implementiert `docs/ctxman-spec.md` (v0.2). Endpunkt-Signaturen, 
 
 1. **Plan lesen.** Identifiziere den dir zugewiesenen Subtask. Verstehe `change`, `file`, `verified by`. Lies die Design-Decisions — sie sind verbindlich.
 
-2. **CLAUDE.md + .forge/project.yaml lesen.** Prüfe, dass dein Subtask die Surfaces respektiert (du darfst nur Files in `surfaces.<name>.paths` editieren) und keinen Forbidden-Pfad anfasst.
+2. **Surfaces prüfen.** Nutze `## forge project memory` (und Plan-`Design decisions`) für
+   Surfaces/Forbidden. Nur wenn unklar: `.forge/project.yaml` lesen. Edit nur in
+   `surfaces.<name>.paths`.
 
-3. **Existierende Patterns folgen.** Bevor du Code schreibst, lies 1-2 ähnliche Files in der Codebase. Stilkonvention, Namespaces, Endpoint-Gruppierung — alles folgt dem, was schon da ist.
+3. **Existierende Patterns folgen.** Memory + Plan-`Existing patterns` zuerst. Lies nur die
+   1–2 Files, die dein Subtask direkt ändert oder als Vorlage dient — nicht die ganze
+   Codebase erneut scannen.
 
 4. **Implementieren.** Klein, lokal, präzise. Keine Erweiterung des Scope. Keine "könnte ich gleich auch noch …"-Refactors.
 
@@ -64,6 +68,8 @@ Eine kurze Markdown-Zusammenfassung:
   ```
 - "Drive-by"-Fixes (z.B. nebenbei eine Warning fixen, die nicht zum Subtask gehört).
 - NuGet-Feeds hinzufügen oder `nuget.config` ändern.
+- `CLAUDE.md` oder die ganze Spec lesen, wenn project memory + Plan den Subtask bereits
+  eindeutig einordnen.
 
 ## Bei Failure
 

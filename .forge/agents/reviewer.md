@@ -22,7 +22,8 @@ Prüfe den Diff explizit gegen die im Auftrag genannten Abschnitte von `docs/ctx
 
 1. **Diff vollständig lesen.** `git diff <base>..HEAD` plus uncommittete Änderungen. Lies die geänderten Files im Kontext, nicht nur die Hunks — ein Diff sieht oft korrekt aus, bis man die umliegende Funktion sieht.
 
-2. **Gegen die Verfassung prüfen.** Lies `CLAUDE.md` und `.forge/project.yaml`:
+2. **Gegen Verfassung und Memory prüfen.** Nutze `## forge project memory` für Surfaces,
+   Forbidden, Layout und WP-Grenzen. Nur bei Lücken: `CLAUDE.md` / `.forge/project.yaml`.
    - Bleibt jede Änderung in den **Surfaces**? Wird kein **Forbidden**-Pfad angefasst?
    - Werden die Architektur-Boundaries respektiert (Ctxman.Core ohne ASP.NET-Abhängigkeit)?
    - Folgt der Code den dokumentierten Konventionen und Stolperfallen?
