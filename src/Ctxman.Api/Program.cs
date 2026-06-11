@@ -6,6 +6,7 @@ using Ctxman.Core;
 using Ctxman.Core.Auth;
 using Ctxman.Core.Domain;
 using Ctxman.Core.Persistence;
+using Ctxman.Core.Rendering;
 using Ctxman.Core.Storage;
 using Ctxman.Core.Tokenization;
 using Microsoft.EntityFrameworkCore;
@@ -37,6 +38,11 @@ builder.Services.AddScoped<IdempotencyService>();
 // Spec §8: konservativer Default-Token-Zähler (stateless ⇒ Singleton). Provider-genaue Zähler
 // sind eigene Registrierungen.
 builder.Services.AddSingleton<ITokenCounter, HeuristicTokenCounter>();
+
+// Spec §4.6: zustandslose Provider-Adapter-Registry (Anthropic + OpenAI in v1).
+builder.Services.AddSingleton<IProviderAdapter, AnthropicMessagesAdapter>();
+builder.Services.AddSingleton<IProviderAdapter, OpenAiChatAdapter>();
+builder.Services.AddSingleton<ProviderAdapterRegistry>();
 
 // Spec §7: Filesystem-Blob-Adapter (Dev). Root aus Sektion `blobstore`; ohne Konfiguration ein
 // fester Default unter dem System-Temp-Pfad (keine Date/Random-APIs zur Startzeit).
@@ -79,6 +85,9 @@ app.MapSegmentEndpoints();
 
 // Spec §4.3 / §7: Blob-Endpunkt (POST /v1/sessions/{sid}/blobs — Streaming-Upload).
 app.MapBlobEndpoints();
+
+// Spec §4.2 / §4.3: Render + Static-Epoch-Bump.
+app.MapRenderEndpoints();
 
 app.Run();
 

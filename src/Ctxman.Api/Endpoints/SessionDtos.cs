@@ -19,7 +19,8 @@ internal sealed record PolicyOverridesDto(
     int? BudgetTokens,
     WatermarksDto? Watermarks,
     int? ExternalizeThresholdTokens,
-    string? Tokenizer);
+    string? Tokenizer,
+    string? OnToolRemoved);
 
 /// <summary>Override der drei Watermark-Schwellen relativ zum Budget (Spec §3.1 / §5).</summary>
 internal sealed record WatermarksDto(

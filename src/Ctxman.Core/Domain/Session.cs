@@ -93,4 +93,26 @@ public sealed class Session
         ContextVersion += 1; // Spec §4.4
         UpdatedAt = now;
     }
+
+    /// <summary>
+    /// Erhöht <see cref="CurrentTurn"/> um 1 und setzt <see cref="UpdatedAt"/> auf
+    /// <paramref name="now"/>. Einziger Ort, der die Monotonie des current_turn garantiert
+    /// (Spec §4.4).
+    /// </summary>
+    public void AdvanceTurn(DateTimeOffset now)
+    {
+        CurrentTurn += 1; // Spec §4.4
+        UpdatedAt = now;
+    }
+
+    /// <summary>
+    /// Erhöht <see cref="StaticEpoch"/> um 1 und setzt <see cref="UpdatedAt"/> auf
+    /// <paramref name="now"/> (Spec §4.2, siehe I1). Erhöht bewusst nicht die
+    /// context_version — der Aufrufer ruft dafür separat <see cref="IncrementVersion"/>.
+    /// </summary>
+    public void BumpStaticEpoch(DateTimeOffset now)
+    {
+        StaticEpoch += 1; // Spec §4.2
+        UpdatedAt = now;
+    }
 }

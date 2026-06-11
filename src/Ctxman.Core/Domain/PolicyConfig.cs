@@ -62,7 +62,8 @@ public sealed record PolicyConfig(
     IReadOnlyDictionary<string, KindPolicy> Kinds,
     CompactionConfig Compaction,
     PromotionConfig Promotion,
-    RetentionConfig Retention)
+    RetentionConfig Retention,
+    string OnToolRemoved = "externalize")
 {
     /// <summary>
     /// Spec-Defaults aus §5 (Beispiel-Policy) und §3.1 (Watermarks) / §7.1 (retention).
@@ -94,5 +95,7 @@ public sealed record PolicyConfig(
             BlobGraceHours: 72,
             EvictedBlobRetentionDays: 0,
             ArchivedSessionBlobs: "delete",
-            SweepInterval: "24h"));
+            SweepInterval: "24h"),
+        // Spec §4.2: keep | externalize (Default) | evict — angewandt auf Units entfernter Tools.
+        OnToolRemoved: "externalize");
 }

@@ -173,6 +173,7 @@ public static class SessionEndpoints
         var budget = overrides?.BudgetTokens ?? defaults.BudgetTokens;
         var externalizeThreshold = overrides?.ExternalizeThresholdTokens ?? defaults.ExternalizeThresholdTokens;
         var tokenizer = overrides?.Tokenizer ?? defaults.Tokenizer;
+        var onToolRemoved = overrides?.OnToolRemoved ?? defaults.OnToolRemoved;
 
         var watermarks = new Watermarks(
             Soft: overrides?.Watermarks?.Soft ?? defaults.Watermarks.Soft,
@@ -185,6 +186,7 @@ public static class SessionEndpoints
             ExternalizeThresholdTokens = externalizeThreshold,
             Tokenizer = tokenizer,
             Watermarks = watermarks,
+            OnToolRemoved = onToolRemoved,
         };
 
         // Spec §5/§3.1: Budget positiv; Watermarks Anteile in (0,1]; soft ≤ hard ≤ emergency.
@@ -218,6 +220,13 @@ public static class SessionEndpoints
             return false;
         }
 
+        // Spec §4.2: on_tool_removed ∈ { keep | externalize | evict }.
+        if (onToolRemoved is not ("keep" or "externalize" or "evict"))
+        {
+            error = "on_tool_removed must be one of: keep, externalize, evict.";
+            return false;
+        }
+
         error = string.Empty;
         return true;
     }
@@ -225,31 +234,11 @@ public static class SessionEndpoints
     private static bool IsValidWatermark(double value) => value > 0.0 && value <= 1.0;
 
     /// <summary>
-    /// Leitet den Watermark-Status aus tokens_used relativ zum Budget ab (Spec §3.1): höchste
-    /// überschrittene Schwelle gewinnt; keine überschritten ⇒ "ok".
+    /// Leitet den Watermark-Status aus tokens_used relativ zum Budget ab (Spec §3.1). Delegiert an
+    /// <see cref="WatermarkState.Derive"/> in Core, damit Render-Pipeline und Endpunkt dieselbe Logik teilen.
     /// </summary>
-    private static string DeriveWatermarkState(int tokensUsed, PolicyConfig policy)
-    {
-        var ratio = policy.BudgetTokens <= 0 ? 0.0 : (double)tokensUsed / policy.BudgetTokens;
-        var w = policy.Watermarks;
-
-        if (ratio >= w.Emergency)
-        {
-            return "emergency";
-        }
-
-        if (ratio >= w.Hard)
-        {
-            return "hard";
-        }
-
-        if (ratio >= w.Soft)
-        {
-            return "soft";
-        }
-
-        return "ok";
-    }
+    private static string DeriveWatermarkState(int tokensUsed, PolicyConfig policy) =>
+        WatermarkState.Derive(tokensUsed, policy);
 
     private static bool TryParseRole(string? wire, out Role? role, out string error)
     {
