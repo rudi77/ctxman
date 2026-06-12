@@ -3,6 +3,7 @@ using System.Text.Json;
 using Ctxman.Api.Gc;
 using Ctxman.Api.Idempotency;
 using Ctxman.Core;
+using Ctxman.Core.Auth;
 using Ctxman.Core.Domain;
 using Ctxman.Core.Gc;
 using Ctxman.Core.Persistence;
@@ -25,8 +26,10 @@ public static class RenderEndpoints
 
     public static IEndpointRouteBuilder MapRenderEndpoints(this IEndpointRouteBuilder app)
     {
-        app.MapPost("/v1/sessions/{sid}/render", RenderAsync);
-        app.MapPut("/v1/sessions/{sid}/static-segments", ReplaceStaticSegmentsAsync);
+        app.MapPost("/v1/sessions/{sid}/render", RenderAsync)
+            .WithMetadata(new ResourceAction("render", null, "write")); // Spec §4.1
+        app.MapPut("/v1/sessions/{sid}/static-segments", ReplaceStaticSegmentsAsync)
+            .WithMetadata(new ResourceAction("static_segments", null, "write")); // Spec §4.1
         return app;
     }
 

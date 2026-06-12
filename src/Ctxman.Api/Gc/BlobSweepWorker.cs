@@ -27,6 +27,7 @@ public sealed class BlobSweepWorker : BackgroundService
     private readonly BlobSweeper _sweeper;
     private readonly TimeProvider _clock;
     private readonly ILogger<BlobSweepWorker> _logger;
+    private readonly Ctxman.Core.Domain.RetentionConfig _retention;
 
     // Spec §7.1: pro Tenant ein Semaphor (SQLite-Äquivalent zu pg_advisory_lock).
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _tenantLocks = new();
@@ -35,18 +36,21 @@ public sealed class BlobSweepWorker : BackgroundService
         IServiceScopeFactory scopeFactory,
         BlobSweeper sweeper,
         TimeProvider clock,
-        ILogger<BlobSweepWorker> logger)
+        ILogger<BlobSweepWorker> logger,
+        Ctxman.Core.Domain.RetentionConfig? retention = null)
     {
         _scopeFactory = scopeFactory;
         _sweeper = sweeper;
         _clock = clock;
         _logger = logger;
+        // Spec §7.1: sweep-Intervall aus injizierter RetentionConfig; Default = PolicyConfig-Default.
+        _retention = retention ?? Ctxman.Core.Domain.PolicyConfig.Default().Retention;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        // Spec §7.1: Default täglich; der Wert kommt aus der Default-Retention-Policy.
-        var interval = Ctxman.Core.Domain.PolicyConfig.Default().Retention.SweepIntervalSpan;
+        // Spec §7.1: Default täglich; der Wert kommt aus der injizierten Retention-Konfiguration.
+        var interval = _retention.SweepIntervalSpan;
         using var timer = new PeriodicTimer(interval, _clock);
 
         while (await timer.WaitForNextTickAsync(stoppingToken))

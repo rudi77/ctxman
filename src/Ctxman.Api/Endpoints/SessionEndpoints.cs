@@ -1,6 +1,7 @@
 using Ctxman.Api.Idempotency;
 using Ctxman.Api.Promotion;
 using Ctxman.Core;
+using Ctxman.Core.Auth;
 using Ctxman.Core.Domain;
 using Ctxman.Core.Persistence;
 using Ctxman.Core.Tokenization;
@@ -19,9 +20,12 @@ public static class SessionEndpoints
 {
     public static IEndpointRouteBuilder MapSessionEndpoints(this IEndpointRouteBuilder app)
     {
-        app.MapPost("/v1/sessions", CreateSessionAsync);
-        app.MapGet("/v1/sessions/{sid}", GetSessionAsync);
-        app.MapPost("/v1/sessions/{sid}/archive", ArchiveSessionAsync);
+        app.MapPost("/v1/sessions", CreateSessionAsync)
+            .WithMetadata(new ResourceAction("session", null, "write")); // Spec §4.1
+        app.MapGet("/v1/sessions/{sid}", GetSessionAsync)
+            .WithMetadata(new ResourceAction("session", null, "read")); // Spec §4.1
+        app.MapPost("/v1/sessions/{sid}/archive", ArchiveSessionAsync)
+            .WithMetadata(new ResourceAction("session", null, "archive")); // Spec §4.1
         return app;
     }
 

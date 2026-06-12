@@ -40,6 +40,8 @@ public enum FrameStatus
 }
 
 /// <summary>Auth-Modus der Tenant-Auflösung. Spec §4.1: <c>none | api_key | jwt</c>.</summary>
+// Spec §4.1: TypeConverter nötig, damit der .NET-Binder snake_case-Werte ("api_key") akzeptiert.
+[System.ComponentModel.TypeConverter(typeof(AuthModeTypeConverter))]
 public enum AuthMode
 {
     None,

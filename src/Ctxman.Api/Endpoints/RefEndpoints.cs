@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Ctxman.Core;
+using Ctxman.Core.Auth;
 using Ctxman.Core.Domain;
 using Ctxman.Core.Persistence;
 using Ctxman.Core.Storage;
@@ -27,7 +28,8 @@ public static class RefEndpoints
 
     public static IEndpointRouteBuilder MapRefEndpoints(this IEndpointRouteBuilder app)
     {
-        app.MapGet("/v1/sessions/{sid}/refs/{segment_id}", ExpandRefAsync);
+        app.MapGet("/v1/sessions/{sid}/refs/{segment_id}", ExpandRefAsync)
+            .WithMetadata(new ResourceAction("ref", null, "read")); // Spec §4.1
         return app;
     }
 

@@ -1,4 +1,5 @@
 using Ctxman.Core;
+using Ctxman.Core.Auth;
 using Ctxman.Core.Domain;
 using Ctxman.Core.Persistence;
 using Ctxman.Core.Storage;
@@ -19,7 +20,8 @@ public static class BlobEndpoints
 
     public static IEndpointRouteBuilder MapBlobEndpoints(this IEndpointRouteBuilder app)
     {
-        app.MapPost("/v1/sessions/{sid}/blobs", UploadBlobAsync);
+        app.MapPost("/v1/sessions/{sid}/blobs", UploadBlobAsync)
+            .WithMetadata(new ResourceAction("blob", null, "write")); // Spec §4.1
         return app;
     }
 

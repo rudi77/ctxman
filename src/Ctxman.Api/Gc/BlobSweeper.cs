@@ -22,6 +22,7 @@ namespace Ctxman.Api.Gc;
 public sealed class BlobSweeper
 {
     private readonly TimeProvider _clock;
+    private readonly RetentionConfig _retention;
 
     // Spec §6: Event-Payload ist kanonisches snake_case-JSON (gleiche Optionen wie die Endpunkte).
     private static readonly JsonSerializerOptions EventPayloadOptions = new()
@@ -29,9 +30,11 @@ public sealed class BlobSweeper
         PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
     };
 
-    public BlobSweeper(TimeProvider clock)
+    public BlobSweeper(TimeProvider clock, RetentionConfig? retention = null)
     {
         _clock = clock;
+        // Spec §7.1: retention aus injizierbarer Konfiguration; Default = PolicyConfig-Defaults.
+        _retention = retention ?? PolicyConfig.Default().Retention;
     }
 
     /// <summary>
@@ -70,16 +73,24 @@ public sealed class BlobSweeper
             keyToSession.TryAdd(key, row.SessionId);
         }
 
+        // Spec §7.1: Session-Status-Map für die session_deleted-Reason-Bestimmung.
+        // Query honoriert den tenant-gescopten QueryFilter (kein IgnoreQueryFilters nötig).
+        var sessionStatusMap = await db.Sessions
+            .Select(s => new { s.Id, s.Status })
+            .ToDictionaryAsync(s => s.Id, s => s.Status, ct);
+
         var now = _clock.GetUtcNow();
-        var grace = PolicyConfig.Default().Retention.BlobGrace;
+        var grace = _retention.BlobGrace; // Spec §7.1: grace aus injizierter RetentionConfig.
 
         var deletions = new List<BlobSweepDeletion>();
 
         await foreach (var blob in blobStore.List(tenantId, ct))
         {
+            var age = now - blob.LastModified;
+
             // Spec §7.1 Schritt 2/3: Grace-Period schützt das Race "Put committed, Segment-Update
-            // noch nicht" und lässt ein Forensik-Fenster offen.
-            if (now - blob.LastModified <= grace)
+            // noch nicht" und lässt ein Forensik-Fenster offen. Gilt IMMER zuerst.
+            if (age <= grace)
             {
                 continue;
             }
@@ -89,11 +100,34 @@ public sealed class BlobSweeper
                 continue; // Live-Referenz ⇒ niemals löschen.
             }
 
-            // reason (Spec §7.1 Schritt 4): existiert IRGENDEINE Segment-Zeile mit diesem Key, ist
-            // der Blob "unreferenced" (Referenz endete); existiert keine, ist er "orphan"
-            // (Crash zwischen Put und Append).
+            // reason (Spec §7.1 Schritt 4):
+            // - existiert keine Segment-Zeile ⇒ "orphan" (Crash zwischen Put und Append).
+            // - Session ist Archived ⇒ "session_deleted" (Spec §7.1).
+            // - sonst ⇒ "unreferenced" (Referenz endete, Session noch aktiv).
             var hasSession = keyToSession.TryGetValue(blob.Key, out var sessionId);
-            var reason = hasSession ? "unreferenced" : "orphan";
+            string reason;
+            if (!hasSession)
+            {
+                reason = "orphan";
+            }
+            else if (sessionStatusMap.TryGetValue(sessionId, out var status)
+                     && status == SessionStatus.Archived)
+            {
+                // Spec §7.1: Blob einer archivierten Session.
+                reason = "session_deleted";
+            }
+            else
+            {
+                reason = "unreferenced";
+            }
+
+            // Spec §7.1: evicted_blob_retention_days schützt "unreferenced"-Blobs (NICHT orphan/session_deleted)
+            // für das konfigurierte Audit-Fenster. Grace gilt bereits — hier nur die Extended-Window-Prüfung.
+            if (reason == "unreferenced" && _retention.EvictedBlobRetentionDays > 0
+                && age <= TimeSpan.FromDays(_retention.EvictedBlobRetentionDays))
+            {
+                continue; // Spec §7.1: keep evicted-segment content for the audit window.
+            }
 
             await blobStore.Delete(tenantId, blob.Key, ct);
 

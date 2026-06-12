@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.Json;
 using Ctxman.Core;
+using Ctxman.Core.Auth;
 using Ctxman.Core.Persistence;
 using Microsoft.EntityFrameworkCore;
 
@@ -25,7 +26,8 @@ public static class EventEndpoints
 
     public static IEndpointRouteBuilder MapEventEndpoints(this IEndpointRouteBuilder app)
     {
-        app.MapGet("/v1/sessions/{sid}/events", GetEventsAsync);
+        app.MapGet("/v1/sessions/{sid}/events", GetEventsAsync)
+            .WithMetadata(new ResourceAction("event", null, "read")); // Spec §4.1
         return app;
     }
 

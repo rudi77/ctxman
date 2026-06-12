@@ -14,6 +14,7 @@ using Ctxman.Core.Promotion;
 using Ctxman.Core.Rendering;
 using Ctxman.Core.Storage;
 using Ctxman.Core.Tokenization;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 
@@ -22,6 +23,30 @@ var builder = WebApplication.CreateBuilder(args);
 // Spec §4.1: Auth-Konfiguration aus Sektion `auth`. AuthMode bindet case-insensitiv aus dem
 // snake_case-String ("none" -> AuthMode.None) über den Standard-Konfigurationsbinder.
 builder.Services.Configure<AuthOptions>(builder.Configuration.GetSection(AuthOptions.SectionName));
+
+// Spec §4.1: JwtBearer immer registrieren (harmlos wenn Modus != jwt, da UseAuthentication
+// nur im jwt-Modus in die Pipeline eingefügt wird). Production-Parameter aus auth:jwt;
+// Tests überschreiben via PostConfigure<JwtBearerOptions> — kein Authority-Discovery in Tests.
+builder.Services
+    .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+    .AddJwtBearer(JwtBearerDefaults.AuthenticationScheme, options =>
+    {
+        // Spec §4.1: production OIDC/JWT params from auth:jwt. Tests override via PostConfigure.
+        var jwt = builder.Configuration.GetSection("auth").GetSection("jwt");
+        var authority = jwt["authority"];
+        if (!string.IsNullOrWhiteSpace(authority)) options.Authority = authority;
+        var issuer  = jwt["issuer"];
+        var audience = jwt["audience"];
+        options.TokenValidationParameters = new Microsoft.IdentityModel.Tokens.TokenValidationParameters
+        {
+            ValidateIssuer           = !string.IsNullOrWhiteSpace(issuer),
+            ValidIssuer              = issuer,
+            ValidateAudience         = !string.IsNullOrWhiteSpace(audience),
+            ValidAudience            = audience,
+            ValidateLifetime         = true,
+            ValidateIssuerSigningKey = true,
+        };
+    });
 
 // Spec §10: dieselbe scoped TenantContext-Instanz für Middleware (setzt TenantId) und
 // CtxmanDbContext (liest ITenantContext für den Global Query Filter).
@@ -54,8 +79,8 @@ builder.Services.AddSingleton<IProviderAdapter, AnthropicMessagesAdapter>();
 builder.Services.AddSingleton<IProviderAdapter, OpenAiChatAdapter>();
 builder.Services.AddSingleton<ProviderAdapterRegistry>();
 
-// Spec §7: Filesystem-Blob-Adapter (Dev). Root aus Sektion `blobstore`; ohne Konfiguration ein
-// fester Default unter dem System-Temp-Pfad (keine Date/Random-APIs zur Startzeit).
+// Spec §7: Blob-Adapter-Auswahl über `blobstore:provider` (default "fs" = Filesystem, "azure-blob" = Azure).
+// Credentials via Standard-.NET-Konfigurationskette (N5).
 builder.Services.Configure<BlobStoreOptions>(builder.Configuration.GetSection("blobstore"));
 builder.Services.PostConfigure<BlobStoreOptions>(o =>
 {
@@ -64,7 +89,27 @@ builder.Services.PostConfigure<BlobStoreOptions>(o =>
         o.Root = Path.Combine(Path.GetTempPath(), "ctxman-blobs");
     }
 });
-builder.Services.AddSingleton<IBlobStore, FileSystemBlobStore>();
+
+var blobProvider = builder.Configuration["blobstore:provider"] ?? "fs";
+if (blobProvider.Equals("azure-blob", StringComparison.OrdinalIgnoreCase))
+{
+    // Spec §7: Azure Blob Storage-Adapter. Container-Client aus Options, Gateway als Seam,
+    // AzureBlobStore enthält die gesamte Content-Addressing- und Tenant-Logik.
+    builder.Services.AddSingleton<IAzureBlobGateway>(sp =>
+    {
+        var opts = sp.GetRequiredService<IOptions<BlobStoreOptions>>().Value;
+        var containerClient = new Azure.Storage.Blobs.BlobContainerClient(
+            opts.ConnectionString,
+            opts.ContainerName);
+        return new AzureBlobContainerGateway(containerClient);
+    });
+    builder.Services.AddSingleton<IBlobStore, AzureBlobStore>();
+}
+else
+{
+    // Default: "fs" — Filesystem-Adapter (Dev/Test).
+    builder.Services.AddSingleton<IBlobStore, FileSystemBlobStore>();
+}
 
 // Spec §8: Minor-GC läuft asynchron außerhalb des Request-Pfads — Channel-Queue (Singleton) +
 // Hosted-Service-Worker. Der Worker serialisiert pro session_id und setzt den Tenant-Scope selbst.
@@ -115,6 +160,13 @@ builder.Services.AddHostedService<MinorGcWorker>();
 // TimeProvider als Clock-Abstraktion, damit Tests die Grace-Grenze deterministisch steuern können
 // (BlobSweeper ist auch direkt aufrufbar). TimeProvider.System ist der reale Default.
 builder.Services.AddSingleton(TimeProvider.System);
+
+// Spec §7.1: Retention-Konfiguration aus Sektion "retention" (snake_case via ConfigurationKeyName).
+// Als Singleton registriert, damit BlobSweeper und BlobSweepWorker per DI injiziert bekommen.
+builder.Services.Configure<RetentionOptions>(builder.Configuration.GetSection(RetentionOptions.SectionName));
+builder.Services.AddSingleton(sp =>
+    sp.GetRequiredService<IOptions<RetentionOptions>>().Value.ToRetentionConfig());
+
 builder.Services.AddSingleton<BlobSweeper>();
 builder.Services.AddHostedService<BlobSweepWorker>();
 
@@ -133,8 +185,25 @@ if (authOptions.Mode == AuthMode.None)
         "authentication. Do not use in production.");
 }
 
+// Spec §4.1: Im jwt-Modus muss UseAuthentication() VOR TenantResolutionMiddleware laufen,
+// damit context.User/IsAuthenticated bereits gesetzt ist, wenn der Middleware der Claim liest.
+if (authOptions.Mode == AuthMode.Jwt)
+{
+    app.UseAuthentication();
+}
+
 // Spec §4.1 / §8: Tenant-Auflösung läuft für jeden Request vor den Endpoints.
 app.UseMiddleware<TenantResolutionMiddleware>();
+
+// Spec §4.1: UseRouting() erzwingt das Endpoint-Matching VOR CtxmanAuthorizationMiddleware,
+// damit context.GetEndpoint() in der Middleware bereits die ResourceAction-Metadaten liefert.
+// In WebApplication (Minimal Hosting) läuft das Endpoint-Matching sonst erst nach der
+// Middleware-Pipeline — ohne diesen Aufruf wäre GetEndpoint() immer null.
+app.UseRouting();
+
+// Spec §4.1 / §8: Authorization läuft nach TenantResolution (Handler sieht bereits aufgelösten Tenant).
+// Pipeline-Reihenfolge: TenantResolution → [Authentication] → Authorization → Endpoints.
+app.UseMiddleware<CtxmanAuthorizationMiddleware>();
 
 app.MapGet("/healthz", (IOptions<AuthOptions> options) =>
     Results.Ok(new HealthzResponse("ok", options.Value.Mode.ToWire())));

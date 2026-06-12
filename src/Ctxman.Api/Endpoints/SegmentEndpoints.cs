@@ -2,6 +2,7 @@ using System.Text;
 using System.Text.Json;
 using Ctxman.Api.Idempotency;
 using Ctxman.Core;
+using Ctxman.Core.Auth;
 using Ctxman.Core.Domain;
 using Ctxman.Core.Persistence;
 using Ctxman.Core.Tokenization;
@@ -37,9 +38,12 @@ public static class SegmentEndpoints
 
     public static IEndpointRouteBuilder MapSegmentEndpoints(this IEndpointRouteBuilder app)
     {
-        app.MapPost("/v1/sessions/{sid}/segments", AppendSegmentsAsync);
-        app.MapPost("/v1/sessions/{sid}/segments/{segid}/pin", PinSegmentAsync);
-        app.MapDelete("/v1/sessions/{sid}/segments/{segid}/pin", UnpinSegmentAsync);
+        app.MapPost("/v1/sessions/{sid}/segments", AppendSegmentsAsync)
+            .WithMetadata(new ResourceAction("segment", null, "write")); // Spec §4.1
+        app.MapPost("/v1/sessions/{sid}/segments/{segid}/pin", PinSegmentAsync)
+            .WithMetadata(new ResourceAction("segment", null, "pin")); // Spec §4.1
+        app.MapDelete("/v1/sessions/{sid}/segments/{segid}/pin", UnpinSegmentAsync)
+            .WithMetadata(new ResourceAction("segment", null, "unpin")); // Spec §4.1
         return app;
     }
 
