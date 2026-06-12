@@ -12,10 +12,14 @@ namespace Ctxman.Api.Auth;
 /// ausschließlich aus dieser Auflösung, nie aus dem Request-Body (Spec §4 / §10).
 ///
 /// Modus <see cref="AuthMode.None"/>: konfigurierter Header (<see cref="AuthOptions.TenantHeader"/>),
-/// sonst <see cref="AuthOptions.DefaultTenant"/>. Die Modi <see cref="AuthMode.ApiKey"/> und
-/// <see cref="AuthMode.Jwt"/> sind in diesem Workpaket nicht implementiert und werfen
-/// <see cref="NotSupportedException"/> (kein stilles Zurückfallen auf <c>none</c>); ihre Aktivierung
-/// ist eine reine Konfigurations-/Registrierungs-Erweiterung.
+/// sonst <see cref="AuthOptions.DefaultTenant"/>. Modus <see cref="AuthMode.ApiKey"/>: liest den
+/// Key aus <c>X-Api-Key</c> (Vorrang) oder <c>Authorization: Bearer &lt;key&gt;</c> und schlägt ihn
+/// im konfigurierten <see cref="AuthOptions.ApiKeys"/>-Dictionary nach — fehlt der Key oder ist er
+/// unbekannt, antwortet die Middleware direkt mit 401 (kein Weiterleiten an <c>_next</c>). Modus
+/// <see cref="AuthMode.Jwt"/>: setzt voraus, dass <c>UseAuthentication</c> den Token bereits
+/// validiert und <c>context.User</c> gesetzt hat — ist der User nicht authentifiziert oder fehlt
+/// der Tenant-Claim (<see cref="AuthOptions.JwtOptions.TenantClaim"/>), antwortet die Middleware
+/// direkt mit 401. Bei allen drei Modi gibt es kein stilles Zurückfallen auf einen anderen Modus.
 /// </summary>
 public sealed class TenantResolutionMiddleware
 {

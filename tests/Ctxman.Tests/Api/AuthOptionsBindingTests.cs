@@ -76,6 +76,46 @@ public sealed class AuthOptionsBindingTests
         Assert.Equal("x-tenant", options.Jwt.TenantClaim);
     }
 
+    // Spec §4.1: Exercises snake_case wire→enum binding via AuthModeTypeConverter.
+    // Without the converter the binder would throw FormatException for "api_key" / "jwt" / "none"
+    // because the enum members are PascalCase. This test must fail if AuthModeTypeConverter is removed.
+    [Fact]
+    public void Bind_SnakeCaseWireValues_MappedViaAuthModeTypeConverter()
+    {
+        // api_key → ApiKey
+        var configApiKey = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?> { ["auth:mode"] = "api_key" })
+            .Build();
+
+        var servicesApiKey = new ServiceCollection();
+        servicesApiKey.Configure<AuthOptions>(configApiKey.GetSection(AuthOptions.SectionName));
+        using var providerApiKey = servicesApiKey.BuildServiceProvider();
+        var optionsApiKey = providerApiKey.GetRequiredService<IOptions<AuthOptions>>().Value;
+        Assert.Equal(AuthMode.ApiKey, optionsApiKey.Mode);
+
+        // jwt → Jwt
+        var configJwt = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?> { ["auth:mode"] = "jwt" })
+            .Build();
+
+        var servicesJwt = new ServiceCollection();
+        servicesJwt.Configure<AuthOptions>(configJwt.GetSection(AuthOptions.SectionName));
+        using var providerJwt = servicesJwt.BuildServiceProvider();
+        var optionsJwt = providerJwt.GetRequiredService<IOptions<AuthOptions>>().Value;
+        Assert.Equal(AuthMode.Jwt, optionsJwt.Mode);
+
+        // none → None (regression: converter must not break the base case)
+        var configNone = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?> { ["auth:mode"] = "none" })
+            .Build();
+
+        var servicesNone = new ServiceCollection();
+        servicesNone.Configure<AuthOptions>(configNone.GetSection(AuthOptions.SectionName));
+        using var providerNone = servicesNone.BuildServiceProvider();
+        var optionsNone = providerNone.GetRequiredService<IOptions<AuthOptions>>().Value;
+        Assert.Equal(AuthMode.None, optionsNone.Mode);
+    }
+
     [Fact] // Spec §4.1: TenantClaim hat Default "tenant_id", wenn nicht in Konfiguration gesetzt.
     public void Bind_JwtOptions_DefaultTenantClaim()
     {
