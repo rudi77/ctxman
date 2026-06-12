@@ -15,8 +15,20 @@ public sealed class RecordingPromotionSink : IPromotionSink
     /// <summary>Alle bisher geschriebenen Fakten mit zugehöriger Sink-URL.</summary>
     public IReadOnlyCollection<(PromotedFact Fact, string SinkUrl)> Writes => _writes;
 
+    /// <summary>
+    /// Wenn gesetzt, wirft <see cref="WriteAsync"/> diese Exception, OHNE den Write aufzuzeichnen —
+    /// simuliert einen fehlschlagenden Webhook-Sink (z. B. EnsureSuccessStatusCode bei 5xx).
+    /// Testet den Promotion-Failure-Pfad (503 promotion_failed). Default: null (kein Throw).
+    /// </summary>
+    public Exception? ThrowOnWrite { get; set; }
+
     public Task WriteAsync(PromotedFact fact, string sinkUrl, CancellationToken ct)
     {
+        if (ThrowOnWrite is not null)
+        {
+            return Task.FromException(ThrowOnWrite);
+        }
+
         _writes.Add((fact, sinkUrl));
         return Task.CompletedTask;
     }

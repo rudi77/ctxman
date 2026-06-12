@@ -39,6 +39,13 @@ public sealed class FakeCompactionModel : ICompactionModel
     /// </summary>
     public bool EmptyPromotionResult { get; set; }
 
+    /// <summary>
+    /// Wenn gesetzt, wirft der Promotion-Aufruf ("fact-extraction-v1") diese Exception —
+    /// simuliert einen fehlschlagenden LLM-Call (z. B. HttpRequestException bei 401).
+    /// Testet den Promotion-Failure-Pfad (503 promotion_failed). Default: null (kein Throw).
+    /// </summary>
+    public Exception? ThrowOnPromotion { get; set; }
+
     public async Task<CompactionResult> SummarizeAsync(CompactionRequest request, CancellationToken ct)
     {
         _received.Add(request);
@@ -47,6 +54,11 @@ public sealed class FakeCompactionModel : ICompactionModel
 
         if (isPromotion)
         {
+            if (ThrowOnPromotion is not null)
+            {
+                throw ThrowOnPromotion;
+            }
+
             // Promotion call: honour EmptyPromotionResult flag.
             var summary = EmptyPromotionResult
                 ? string.Empty

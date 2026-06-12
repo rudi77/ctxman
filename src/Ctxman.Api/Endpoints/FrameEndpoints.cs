@@ -180,6 +180,7 @@ public static class FrameEndpoints
         ITenantContext tenant,
         IdempotencyService idempotency,
         PromotionService promotionService,
+        ILoggerFactory loggerFactory,
         CancellationToken ct)
     {
         // Spec §4.4: Idempotency-Key ist auf DELETE frames Pflicht. Fehlend/leer ⇒ 400 vor jedem Write.
@@ -247,13 +248,34 @@ public static class FrameEndpoints
 
         // Spec §3.3: LLM-Call AUSSERHALB der DB-Transaktion (keine langen Locks während Netzwerk-I/O).
         var policy = session.Policy;
-        var pendingPromotions = await promotionService.ExtractAndSinkAsync(
-            promotionCandidates,
-            policy,
-            sessionId,
-            tenant.TenantId,
-            session.CurrentTurn,
-            ct);
+        IReadOnlyList<PendingPromotionEvent> pendingPromotions;
+        try
+        {
+            pendingPromotions = await promotionService.ExtractAndSinkAsync(
+                promotionCandidates,
+                policy,
+                sessionId,
+                tenant.TenantId,
+                session.CurrentTurn,
+                ct);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw; // Client-Abbruch — kein Fehlerfall des Servers.
+        }
+        catch (Exception ex)
+        {
+            // Spec-Lücke §2.5/§3.3, Operator-Entscheidung 2026-06-12: Promotion ist zwingend (§3.3),
+            // Frame-lokale Entscheidungen dürfen nicht verloren gehen (§2.5) — bei Promotion-Fehler
+            // KEIN Pop, sondern definierter retrybarer Fehler. Es wurde noch nichts mutiert (der
+            // LLM-/Sink-Call läuft vor der Transaktion); Retry mit demselben Idempotency-Key ist sicher.
+            loggerFactory.CreateLogger(typeof(FrameEndpoints).FullName!).LogError(ex,
+                "Terminal promotion failed during frame pop (session {SessionId}, frame {FrameId}); returning 503.",
+                sessionId, frameId);
+            return Results.Json(
+                new { error = "promotion_failed", retryable = true },
+                statusCode: StatusCodes.Status503ServiceUnavailable);
+        }
 
         // MAX(seq) für neue Segmente + Events bestimmen.
         var maxSegSeq = await db.Segments

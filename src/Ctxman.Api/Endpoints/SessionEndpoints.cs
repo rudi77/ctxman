@@ -179,6 +179,7 @@ public static class SessionEndpoints
         PromotionService promotionService,
         RetentionConfig retention,
         IColdStorageExporter coldStorageExporter,
+        ILoggerFactory loggerFactory,
         CancellationToken ct)
     {
         // Spec §4.4: Idempotency-Key ist auf state-mutierenden Endpunkten Pflicht. Fehlend/leer ⇒ 400.
@@ -229,13 +230,34 @@ public static class SessionEndpoints
             .ToList();
 
         // Spec §3.3: LLM-Call AUSSERHALB der DB-Transaktion (keine langen Locks während Netzwerk-I/O).
-        var pendingPromotions = await promotionService.ExtractAndSinkAsync(
-            promotionCandidates,
-            session.Policy,
-            sessionId,
-            tenant.TenantId,
-            session.CurrentTurn,
-            ct);
+        IReadOnlyList<PendingPromotionEvent> pendingPromotions;
+        try
+        {
+            pendingPromotions = await promotionService.ExtractAndSinkAsync(
+                promotionCandidates,
+                session.Policy,
+                sessionId,
+                tenant.TenantId,
+                session.CurrentTurn,
+                ct);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw; // Client-Abbruch — kein Fehlerfall des Servers.
+        }
+        catch (Exception ex)
+        {
+            // Spec-Lücke §2.5/§3.3, Operator-Entscheidung 2026-06-12: terminale Promotion ist
+            // zwingend (§3.3) — bei Promotion-Fehler KEINE Archivierung, sondern definierter
+            // retrybarer Fehler. Es wurde noch nichts mutiert (der LLM-/Sink-Call läuft vor der
+            // Transaktion); Retry mit demselben Idempotency-Key ist sicher.
+            loggerFactory.CreateLogger(typeof(SessionEndpoints).FullName!).LogError(ex,
+                "Terminal promotion failed during session archive (session {SessionId}); returning 503.",
+                sessionId);
+            return Results.Json(
+                new { error = "promotion_failed", retryable = true },
+                statusCode: StatusCodes.Status503ServiceUnavailable);
+        }
 
         // MAX(seq) für Events bestimmen.
         var maxEventSeq = await db.Events
