@@ -20,7 +20,24 @@ internal sealed record PolicyOverridesDto(
     WatermarksDto? Watermarks,
     int? ExternalizeThresholdTokens,
     string? Tokenizer,
-    string? OnToolRemoved);
+    string? OnToolRemoved,
+    CompactionDto? Compaction,
+    PromotionDto? Promotion);
+
+/// <summary>Override der Major-Collection-Compaction-Konfiguration (Spec §5).</summary>
+internal sealed record CompactionDto(
+    string? Model,
+    string? PromptTemplateId,
+    double? MaxShare);
+
+/// <summary>Override der Promotion-Senke (Spec §5).</summary>
+internal sealed record PromotionSinkDto(
+    string? Type,
+    string? Url);
+
+/// <summary>Override der Promotion-Konfiguration (Spec §5).</summary>
+internal sealed record PromotionDto(
+    PromotionSinkDto? Sink);
 
 /// <summary>Override der drei Watermark-Schwellen relativ zum Budget (Spec §3.1 / §5).</summary>
 internal sealed record WatermarksDto(

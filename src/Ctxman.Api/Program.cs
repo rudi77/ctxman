@@ -1,12 +1,16 @@
 using Ctxman.Api.Auth;
+using Ctxman.Api.Compaction;
 using Ctxman.Api.Endpoints;
 using Ctxman.Api.Gc;
 using Ctxman.Api.Idempotency;
+using Ctxman.Api.Promotion;
 using Ctxman.Api.Storage;
 using Ctxman.Core;
 using Ctxman.Core.Auth;
+using Ctxman.Core.Compaction;
 using Ctxman.Core.Domain;
 using Ctxman.Core.Persistence;
+using Ctxman.Core.Promotion;
 using Ctxman.Core.Rendering;
 using Ctxman.Core.Storage;
 using Ctxman.Core.Tokenization;
@@ -61,6 +65,45 @@ builder.Services.AddSingleton<IBlobStore, FileSystemBlobStore>();
 // Hosted-Service-Worker. Der Worker serialisiert pro session_id und setzt den Tenant-Scope selbst.
 builder.Services.AddSingleton<ChannelGcJobQueue>();
 builder.Services.AddSingleton<IGcJobQueue>(sp => sp.GetRequiredService<ChannelGcJobQueue>());
+
+// Spec §8: Shared per-Session-Lock (Minor + Major teilen denselben Singleton — WP5 Subtask 5).
+// Entspricht dem SQLite-Äquivalent zu pg_advisory_lock(session_id); echter Postgres-Lock in WP7.
+builder.Services.AddSingleton<SessionGcLocks>();
+
+// Spec §3.3 / §8: CompactionOptions aus Sektion "Compaction" (Non-Goal N5: Credentials via Config).
+builder.Services.Configure<CompactionOptions>(builder.Configuration.GetSection(CompactionOptions.SectionName));
+
+// Spec §3.3 / §8: ICompactionModel — Adapter-Auswahl über Compaction:Provider (default "anthropic").
+// Singleton-Registrierung via IHttpClientFactory-Factory: HttpClient ist thread-safe und für
+// Singleton-Nutzung ausgelegt; IHttpClientFactory rotiert den Handler intern (DNS-TTL-sicher).
+// MajorCollection ist Singleton ⇒ Adapter muss Singleton sein — kein Captive-Dependency.
+builder.Services.AddHttpClient(); // registriert IHttpClientFactory falls nicht bereits vorhanden.
+var compactionProvider = builder.Configuration["Compaction:Provider"] ?? "anthropic";
+if (compactionProvider.Equals("azure_openai", StringComparison.OrdinalIgnoreCase))
+{
+    builder.Services.AddSingleton<ICompactionModel>(sp =>
+        new AzureOpenAiCompactionModel(
+            sp.GetRequiredService<IHttpClientFactory>().CreateClient(nameof(AzureOpenAiCompactionModel)),
+            sp.GetRequiredService<IOptions<CompactionOptions>>()));
+}
+else
+{
+    // Default: "anthropic" (Spec §8).
+    builder.Services.AddSingleton<ICompactionModel>(sp =>
+        new AnthropicCompactionModel(
+            sp.GetRequiredService<IHttpClientFactory>().CreateClient(nameof(AnthropicCompactionModel)),
+            sp.GetRequiredService<IOptions<CompactionOptions>>()));
+}
+
+// Spec §3.3 / §5: IPromotionSink — WebhookPromotionSink als Singleton mit IHttpClientFactory.
+builder.Services.AddSingleton<IPromotionSink>(sp =>
+    new WebhookPromotionSink(
+        sp.GetRequiredService<IHttpClientFactory>().CreateClient(nameof(WebhookPromotionSink))));
+
+// Spec §3.3: MajorCollection führt Major GC aus (Promotion→Compaction — Logik in Subtask 6).
+// Singleton, weil zustandslos; nutzt IServiceScopeFactory für per-Job-Scoping.
+builder.Services.AddSingleton<MajorCollection>();
+
 builder.Services.AddHostedService<MinorGcWorker>();
 
 // Spec §7.1: Blob-Mark-and-Sweep als Hosted Service (Default täglich, pro Tenant, serialisiert).
