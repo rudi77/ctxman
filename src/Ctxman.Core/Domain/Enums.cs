@@ -46,3 +46,13 @@ public enum AuthMode
     ApiKey,
     Jwt,
 }
+
+/// <summary>Render-Scope-Filter (Spec §2.5). Steuert, welche Working-Segmente gerendert werden.</summary>
+public enum RenderScope
+{
+    /// <summary>Default: Static + Working-Segmente des aktuellen Frame-Pfads (Root + alle offenen Frames).</summary>
+    Path,
+
+    /// <summary>Isolierter Subagent-View: Static + gepinnte Root-Segmente + Segmente des Tip-Frames.</summary>
+    Frame,
+}

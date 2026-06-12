@@ -19,10 +19,19 @@ public static class RenderPlanner
     /// <summary>
     /// Plant den deterministischen Render-Output für die gegebenen Segmente (Spec §4.6).
     /// </summary>
+    /// <param name="session">Die Session.</param>
+    /// <param name="segments">Alle Segmente der Session.</param>
+    /// <param name="policy">Effektive Policy (Token-Budget etc.).</param>
+    /// <param name="scope">Render-Scope-Filter (Spec §2.5). Default: <see cref="RenderScope.Path"/>.</param>
+    /// <param name="openFrameIds">IDs aller offenen Frames; leer = Root-Level (kein Frame aktiv).</param>
+    /// <param name="tipFrameId">Der oberste offene Frame (Stack-Tip); null wenn kein Frame offen.</param>
     public static RenderPlanResult Plan(
         Session session,
         IReadOnlyList<Segment> segments,
-        PolicyConfig policy)
+        PolicyConfig policy,
+        RenderScope scope = RenderScope.Path,
+        IReadOnlyCollection<Ulid>? openFrameIds = null,
+        Ulid? tipFrameId = null)
     {
         ArgumentNullException.ThrowIfNull(session);
         ArgumentNullException.ThrowIfNull(segments);
@@ -48,10 +57,33 @@ public static class RenderPlanner
             .ThenBy(i => i.ContentHash, StringComparer.Ordinal)
             .ToList();
 
+        // Spec §2.5: Scope-Filter auf dem Working-Set VOR dem sort/coalescing anwenden (I4).
+        // Static wird nie gefiltert. openFrameIds = null/leer bedeutet Root-Level (kein Frame aktiv).
+        var effectiveOpenFrameIds = openFrameIds is { Count: > 0 }
+            ? openFrameIds.ToHashSet()
+            : (ISet<Ulid>)new HashSet<Ulid>();
+
+        var eligibleWorking = eligible.Where(s => s.Region == Region.Working);
+
+        var scopedWorking = scope switch
+        {
+            // Spec §2.5 scope=path (default): Root-Segmente (frame_id = null) ODER Segmente eines
+            // offenen Frames. Geschlossene/evicted Frames werden ausgeblendet.
+            RenderScope.Path => eligibleWorking.Where(s =>
+                s.FrameId is null || effectiveOpenFrameIds.Contains(s.FrameId.Value)),
+
+            // Spec §2.5 scope=frame: gepinnte Root-Segmente (frame_id = null && pinned) PLUS
+            // Segmente des Tip-Frames. Ohne Tip degeneriert zu gepinnten Root-Segmenten.
+            RenderScope.Frame => eligibleWorking.Where(s =>
+                (s.FrameId is null && s.Pinned) ||
+                (tipFrameId.HasValue && s.FrameId == tipFrameId.Value)),
+
+            _ => eligibleWorking,
+        };
+
         // Spec §4.6 / I4: Working strikt nach seq aufsteigend; gepinnte Segmente bleiben an ihrer
         // chronologischen Position (kein Herausziehen, kein Reordering).
-        var working = eligible
-            .Where(s => s.Region == Region.Working)
+        var working = scopedWorking
             .OrderBy(s => s.Seq)
             .ToList();
 

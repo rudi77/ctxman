@@ -1,4 +1,5 @@
 using Ctxman.Api.Idempotency;
+using Ctxman.Api.Promotion;
 using Ctxman.Core;
 using Ctxman.Core.Domain;
 using Ctxman.Core.Persistence;
@@ -20,6 +21,7 @@ public static class SessionEndpoints
     {
         app.MapPost("/v1/sessions", CreateSessionAsync);
         app.MapGet("/v1/sessions/{sid}", GetSessionAsync);
+        app.MapPost("/v1/sessions/{sid}/archive", ArchiveSessionAsync);
         return app;
     }
 
@@ -157,6 +159,116 @@ public static class SessionEndpoints
             WatermarkState: watermarkState,
             CreatedAt: session.CreatedAt,
             UpdatedAt: session.UpdatedAt));
+    }
+
+    /// <summary>
+    /// Archiviert eine Session (Spec §4.3): terminal promotion über alle verbleibenden
+    /// Working-Segmente, dann Status → archived, Version increment, Idempotency-Snapshot.
+    /// </summary>
+    private static async Task<IResult> ArchiveSessionAsync(
+        string sid,
+        HttpRequest httpRequest,
+        CtxmanDbContext db,
+        ITenantContext tenant,
+        IdempotencyService idempotency,
+        PromotionService promotionService,
+        CancellationToken ct)
+    {
+        // Spec §4.4: Idempotency-Key ist auf state-mutierenden Endpunkten Pflicht. Fehlend/leer ⇒ 400.
+        if (!httpRequest.Headers.TryGetValue("Idempotency-Key", out var idemHeader)
+            || string.IsNullOrWhiteSpace(idemHeader.ToString()))
+        {
+            return Results.BadRequest(new { error = "The Idempotency-Key header is required (Spec §4.4)." });
+        }
+
+        var idempotencyKey = idemHeader.ToString();
+
+        // Spec §4.4: wiederholter Key ⇒ identische Antwort, kein Doppel-Archivierung. Replay vor dem Write.
+        var replay = await idempotency.TryReplayAsync(idempotencyKey, ct);
+        if (replay is not null)
+        {
+            return replay;
+        }
+
+        if (!Ulid.TryParse(sid, out var sessionId))
+        {
+            // Ungültige ID kann keine Session adressieren — wie unbekannt behandeln (kein Leak).
+            return Results.NotFound();
+        }
+
+        // Spec §10: globaler Query-Filter ⇒ unbekannte ODER fremde Session liefert null ⇒ 404.
+        var session = await db.Sessions
+            .FirstOrDefaultAsync(s => s.Id == sessionId, ct);
+        if (session is null)
+        {
+            return Results.NotFound();
+        }
+
+        // Spec §3.3: Promotion-Eligible = live/externalized Working-Segmente (nicht pinned-exclusion
+        // da die Selektionslogik die gleiche wie beim frame-pop ist).
+        var promotionCandidates = await db.Segments
+            .Where(s => s.SessionId == sessionId
+                && s.Region == Region.Working
+                && (s.State == SegmentState.Live || s.State == SegmentState.Externalized))
+            .OrderBy(s => s.Seq)
+            .ToListAsync(ct);
+
+        // Spec §3.3: LLM-Call AUSSERHALB der DB-Transaktion (keine langen Locks während Netzwerk-I/O).
+        var pendingPromotions = await promotionService.ExtractAndSinkAsync(
+            promotionCandidates,
+            session.Policy,
+            sessionId,
+            tenant.TenantId,
+            session.CurrentTurn,
+            ct);
+
+        // MAX(seq) für Events bestimmen.
+        var maxEventSeq = await db.Events
+            .Where(ev => ev.SessionId == sessionId)
+            .Select(ev => (long?)ev.Seq)
+            .MaxAsync(ct);
+        var nextEventSeq = (maxEventSeq ?? -1) + 1;
+
+        var now = DateTimeOffset.UtcNow;
+
+        // Spec §4.3: alles atomar in EINER Transaktion.
+        await using var tx = await db.Database.BeginTransactionAsync(ct);
+
+        // fact_promoted-Events (von PromotionService, Spec §3.3).
+        var eventsToAdd = new List<EventRecord>();
+        foreach (var pending in pendingPromotions)
+        {
+            eventsToAdd.Add(new EventRecord
+            {
+                Id = Ulid.NewUlid(),
+                TenantId = pending.TenantId,
+                SessionId = pending.SessionId,
+                Type = pending.Type, // "fact_promoted"
+                Payload = pending.Payload,
+                Seq = nextEventSeq++,
+                CreatedAt = now,
+            });
+        }
+
+        db.Events.AddRange(eventsToAdd);
+
+        // Spec §4.3: Status → archived, context_version erhöhen (Spec §4.4: genau EINMAL pro Request).
+        session.Archive(now);
+        session.IncrementVersion(now);
+
+        // Spec §4.4: Archiv-Snapshot atomar in DERSELBEN Transaktion — 204 No Content hat keinen Body;
+        // leeres Objekt als Platzhalter (der Replay-Pfad schreibt keinen sinnvollen Body bei 204).
+        await idempotency.StageRecordAsync(
+            idempotencyKey,
+            session.Id,
+            StatusCodes.Status204NoContent,
+            new { },
+            ct);
+
+        await db.SaveChangesAsync(ct);
+        await tx.CommitAsync(ct);
+
+        return Results.NoContent();
     }
 
     /// <summary>

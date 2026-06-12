@@ -65,6 +65,22 @@ public static class RenderEndpoints
             }
         }
 
+        // Spec §2.5: scope parsen — default "path"; unbekannter Wert ⇒ 400.
+        RenderScope renderScope;
+        var scopeWire = request.Scope ?? "path";
+        if (scopeWire == "path")
+        {
+            renderScope = RenderScope.Path;
+        }
+        else if (scopeWire == "frame")
+        {
+            renderScope = RenderScope.Frame;
+        }
+        else
+        {
+            return Results.BadRequest(new { error = $"Unknown scope '{scopeWire}'. Valid values: path, frame." });
+        }
+
         if (!adapters.TryGet(request.Provider, out var adapter) || adapter is null)
         {
             return Results.BadRequest(new
@@ -79,7 +95,10 @@ public static class RenderEndpoints
             return Results.NotFound();
         }
 
-        var session = await db.Sessions.FirstOrDefaultAsync(s => s.Id == sessionId, ct);
+        // Frames mit einladen, damit wir den Frame-Pfad für den Scope-Filter bestimmen können.
+        var session = await db.Sessions
+            .Include(s => s.Frames)
+            .FirstOrDefaultAsync(s => s.Id == sessionId, ct);
         if (session is null)
         {
             return Results.NotFound();
@@ -89,7 +108,14 @@ public static class RenderEndpoints
             .Where(s => s.SessionId == sessionId)
             .ToListAsync(ct);
 
-        var plan = RenderPlanner.Plan(session, segments, session.Policy);
+        // Spec §2.5: offene Frames und Tip für Scope-Filter ermitteln.
+        var openFrameIds = session.Frames
+            .Where(f => f.Status == FrameStatus.Open)
+            .Select(f => f.Id)
+            .ToList();
+        var tipFrameId = FrameEndpoints.FindTipFrame(session.Frames);
+
+        var plan = RenderPlanner.Plan(session, segments, session.Policy, renderScope, openFrameIds, tipFrameId);
 
         // Spec §2 I5: unvollständige Units ⇒ 422 mit offenen tool_call-IDs.
         if (plan.OpenToolCallIds.Count > 0)

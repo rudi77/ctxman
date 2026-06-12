@@ -137,11 +137,17 @@ public static class SegmentEndpoints
         }
 
         // Spec §10: globaler Query-Filter ⇒ unbekannte ODER fremde Session liefert null ⇒ 404.
-        var session = await db.Sessions.FirstOrDefaultAsync(s => s.Id == sessionId, ct);
+        // Frames mit einladen — für die Tip-Berechnung (Spec §2.5) in einem Round-Trip.
+        var session = await db.Sessions
+            .Include(s => s.Frames)
+            .FirstOrDefaultAsync(s => s.Id == sessionId, ct);
         if (session is null)
         {
             return Results.NotFound();
         }
+
+        // Spec §2.5: jedes Working-Segment erbt den Stack-Tip (topmost open frame) oder null (Root).
+        var tipFrameId = FrameEndpoints.FindTipFrame(session.Frames);
 
         // Spec §4.4: optimistic concurrency. If-Match (optional) = erwartete context_version.
         if (httpRequest.Headers.TryGetValue("If-Match", out var ifMatch)
@@ -228,6 +234,7 @@ public static class SegmentEndpoints
                     createdTurn: session.CurrentTurn,
                     source: item.Source,
                     toolCallId: item.ToolCallId,
+                    frameId: tipFrameId, // Spec §2.5: Stack-Tip oder null (Root)
                     pinned: item.Pinned ?? false,
                     tokens: tokens);
             }
@@ -258,6 +265,7 @@ public static class SegmentEndpoints
                     createdTurn: session.CurrentTurn,
                     source: item.Source,
                     toolCallId: item.ToolCallId,
+                    frameId: tipFrameId, // Spec §2.5: Stack-Tip oder null (Root)
                     pinned: item.Pinned ?? false,
                     tokens: tokenCounter.Count(content));
             }
