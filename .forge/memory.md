@@ -32,7 +32,7 @@ Stateful .NET-9-Service für LLM-Context-Verwaltung (Stack/Heap/GC-Metapher). ct
   `Idempotency-Key` (Pflicht bei `turn_advance=true` auf render).
 - Spec-Invarianten in Code: Kommentare `// Spec §x.y` bei nicht-offensichtlichen Stellen.
 
-## Bereits implementiert (WP1–WP5)
+## Bereits implementiert (WP1–WP6)
 
 **Sessions** (`SessionEndpoints`):
 - `POST /v1/sessions`, `GET /v1/sessions/{sid}`
@@ -87,6 +87,27 @@ Stateful .NET-9-Service für LLM-Context-Verwaltung (Stack/Heap/GC-Metapher). ct
   LLM-Calls pro Major-Lauf (Fact-Extraction + Compaction); `DbUpdateConcurrencyException`-Guard
   ist bis zum Optimistic-Concurrency-Token (WP7) toter Defense-in-depth-Code.
 
+**Frames / Render-Scope / Archivierung (WP6, PR #5 gemerged)** — `FrameEndpoints`,
+`PromotionService`, `RenderPlanner`, `Session`:
+- **Frame-Stack** (Spec §2.5): `POST /v1/sessions/{sid}/frames {label}` → `201 {frame_id}`
+  (`parent_frame_id` = oberster offener Frame oder null, `Idempotency-Key` Pflicht);
+  `DELETE /v1/sessions/{sid}/frames/{fid} {return_content}` → `200 {return_segment_id,
+  context_version}`. Pop ist **LIFO**: Frame mit offenen Kind-Frames → `409`. Segment-Append bei
+  offenem Frame setzt `frame_id` auf den obersten offenen Frame (sonst null).
+- **Frame-Pop-Ablauf** (Spec §3.3): **erst** Promotion-Policy über die Frame-Segmente
+  (`fact_promoted` **vor** `frame_popped`), **dann** alle Frame-Segmente → `evicted`, der Return
+  als `subagent_return`-Segment im Parent-Frame. Events `frame_pushed` / `frame_popped{return_segment_id}`.
+- **Render-Scope** (Spec §2.5): `render` nimmt `scope` (`RenderDtos.Scope`, default `path`,
+  unbekannt → `400`). `path` = Root + offene Frames des Pfads; `frame` = Static + gepinnte
+  Root-Segmente + Segmente des aktuellen Frames (isolierte Sicht). Filterung in `RenderPlanner`;
+  WP3-Determinismus (kanonische Sortierung, byte-identischer Prefix, Coalescing) unverändert.
+- **Archivierung** (Spec §4.3): `POST /v1/sessions/{sid}/archive` → `204`; **vorher** terminale
+  Promotion über die verbliebenen Working-Segmente, dann `status := archived` + `context_version++`
+  (genau einmal pro Request, Idempotency-Snapshot). Danach enden die Live-Refs → der WP4-Sweep
+  räumt nach `blob_grace` auf. **Kein** Cold-Storage-Export (WP7).
+- **`PromotionService`** (`src/Ctxman.Api/Promotion/`): die geteilte Fact-Extraction-+-Sink-Logik,
+  die Frame-Pop UND Archive nutzen (baut auf dem `IPromotionSink`/`ICompactionModel`-Pfad aus WP5 auf).
+
 **Cross-cutting**:
 - `ITokenCounter` → `HeuristicTokenCounter` (Singleton)
 - `ICtxmanAuthorizationHandler` → `AllowAllWithinTenantAuthorizationHandler`
@@ -94,11 +115,9 @@ Stateful .NET-9-Service für LLM-Context-Verwaltung (Stack/Heap/GC-Metapher). ct
 
 ## Noch offen (nicht vorgezogen implementieren)
 
-- **WP6** — Frames: frames-Stack, Frame-Scope-Render, Archivierung (M4). Spec §2.1/§2.5/§3.3/§4.3/§6.
-  Baut auf Promotion aus WP5 auf (terminale Promotion bei Frame-Pop / `archive`).
-- **WP7** — Härtung: Auth (`api_key`/`jwt`), Autorisierung, Azure-Blob, Prometheus-Metriken,
-  Retention/Cold-Storage (M5). Spec §4.1/§6/§7/§7.1/§8/§10.
-- Siehe jeweils `docs/forge-work/wp5-prompt.md` ff. und `wpN-acceptance.md`.
+- **WP7** (letztes Paket) — Härtung: Auth (`api_key`/`jwt`), Autorisierung, Azure-Blob,
+  Prometheus-Metriken, Retention/Cold-Storage (M5). Spec §4.1/§6/§7/§7.1/§8/§10.
+- Siehe `docs/forge-work/wp7-prompt.md` und `wp7-acceptance.md`.
 
 ## Test-Patterns
 
@@ -125,6 +144,7 @@ Stateful .NET-9-Service für LLM-Context-Verwaltung (Stack/Heap/GC-Metapher). ct
 | Render-Pipeline | `src/Ctxman.Core/Rendering/*.cs` |
 | GC (Minor/Major, Queue, Worker, Locks) | `src/Ctxman.Core/Gc/*.cs`, `src/Ctxman.Api/Gc/*.cs` |
 | Compaction-LLM / Promotion-Sink | `src/Ctxman.{Core,Api}/Compaction/*.cs`, `.../Promotion/*.cs` |
+| Frames (Push/Pop/Scope/Archive) | `FrameEndpoints.cs`, `PromotionService.cs`, `RenderPlanner.cs`, `Session.cs` |
 | Refs/Events/GC-Endpoints | `RefEndpoints.cs`, `EventEndpoints.cs`, `GcEndpoints.cs` |
 | Blob-Sweep | `src/Ctxman.Api/Gc/BlobSweeper.cs` + `BlobSweepWorker.cs` |
 | API-Endpoint-Muster | bestehende `*Endpoints.cs` im gleichen Stil erweitern |
