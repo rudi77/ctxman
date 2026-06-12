@@ -2,6 +2,7 @@ import { useState } from "react";
 import { api } from "../api/client";
 import { ApiError } from "../api/types";
 import type { SegmentView } from "../state/eventReducer";
+import { getRecorded } from "../state/contentStore";
 import { kindColor } from "../lib/colors";
 import { formatTokens } from "../lib/format";
 
@@ -27,6 +28,7 @@ export function SegmentInspector({ sessionId, segment, pinnedIds, onPinChange, o
   }
 
   const isPinned = pinnedIds.has(segment.id);
+  const recorded = getRecorded(sessionId, segment.id);
 
   const doPin = async () => {
     setBusy(true);
@@ -74,9 +76,23 @@ export function SegmentInspector({ sessionId, segment, pinnedIds, onPinChange, o
         id {segment.id}
         <br />
         seq {segment.seq} · {formatTokens(segment.tokens)} Tokens · Region {segment.region}
+        {segment.frameId && <> · Frame {segment.frameId.slice(0, 8)}…</>}
+        {recorded?.role && <> · role {recorded.role}</>}
+        {recorded?.toolCallId && <> · unit {recorded.toolCallId}</>}
         {segment.expansions > 0 && <> · {segment.expansions}× expandiert</>}
         {segment.synthetic && <> · (aus Events abgeleitet)</>}
       </div>
+      {recorded?.content ? (
+        <div>
+          <div className="muted" style={{ marginBottom: 4 }}>Inhalt (beim Append lokal aufgezeichnet):</div>
+          <div className="json-view" style={{ maxHeight: 220 }}>{recorded.content}</div>
+        </div>
+      ) : (
+        <div className="muted">
+          Kein lokal aufgezeichneter Inhalt — Segment stammt nicht aus dieser UI.
+          {segment.state === "externalized" && " Inhalt per expand_context_ref aus dem Blob Store laden ↓"}
+        </div>
+      )}
       <div className="row">
         <button onClick={doPin} disabled={busy || segment.region === "static"}>
           {isPinned ? "📌 Unpin" : "📌 Pin"}

@@ -1,6 +1,7 @@
 import { api } from "../api/client";
 import { ApiError, type RenderResponse, type StaticSegmentInput } from "../api/types";
 import type { KnownSession } from "../state/sessionStore";
+import { recordSegments } from "../state/contentStore";
 import { loremTokens } from "../lib/format";
 import type { Scenario, SimContext, SimLine, SimState } from "./types";
 
@@ -155,6 +156,18 @@ function buildContext(sessionId: string): SimContext {
   ): Promise<string[]> => {
     throwIfAborted();
     const res = await api.appendSegments(sessionId, segments);
+    // Inhalte lokal mitschreiben — der Event-Stream trägt sie nicht (Memory-Map/Inspektor).
+    recordSegments(
+      sessionId,
+      segments.map((s, i) => ({
+        id: res.segment_ids[i],
+        content: s.content ?? "",
+        role: s.role,
+        toolCallId: s.tool_call_id,
+        source: s.source,
+        pinned: s.pinned,
+      })),
+    );
     return res.segment_ids;
   };
 
@@ -225,7 +238,10 @@ function buildContext(sessionId: string): SimContext {
     },
     popFrame: async (frameId, returnContent) => {
       throwIfAborted();
-      await api.popFrame(sessionId, frameId, returnContent);
+      const res = await api.popFrame(sessionId, frameId, returnContent);
+      recordSegments(sessionId, [
+        { id: res.return_segment_id, content: returnContent, role: "assistant" },
+      ]);
       ctx.log(`⤴ Frame gepoppt — subagent_return im Parent`);
     },
     gc: async (level) => {

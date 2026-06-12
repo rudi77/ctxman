@@ -5,6 +5,7 @@ import type { LiveState, SegmentView } from "../state/eventReducer";
 import { DEFAULT_BUDGET, DEFAULT_WATERMARKS, type KnownSession } from "../state/sessionStore";
 import { formatPercent, formatTokens } from "../lib/format";
 import { BudgetGauge } from "./BudgetGauge";
+import { ContextView } from "./ContextView";
 import { MemoryMap } from "./MemoryMap";
 import { TokenTimeline } from "./TokenTimeline";
 import { EventFeed } from "./EventFeed";
@@ -103,7 +104,9 @@ export function Dashboard({ known, detail, live, pinnedIds, onPinChange, refresh
           Memory-Map <span className="hint">— Static (Stack) / Working Set (Heap), Blockbreite ∝ Tokens, Klick für Details</span>
         </h3>
         <MemoryMap
+          sessionId={known.id}
           segments={segments}
+          frames={frames}
           staticEpoch={detail.static_epoch}
           knownStatic={known.staticSegments}
           staticTokensEstimate={staticTokens}
@@ -111,6 +114,13 @@ export function Dashboard({ known, detail, live, pinnedIds, onPinChange, refresh
           onSelect={setSelected}
           pinnedIds={pinnedIds}
         />
+      </div>
+
+      <div className="panel">
+        <h3>
+          Live-Context <span className="hint">— das echte Render-Ergebnis: genau das sieht das Modell (Ground Truth vom Service)</span>
+        </h3>
+        <ContextView sessionId={known.id} />
       </div>
 
       <div className="grid-2" style={{ marginBottom: 14 }}>

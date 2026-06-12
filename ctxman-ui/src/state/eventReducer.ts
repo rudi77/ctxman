@@ -18,6 +18,13 @@ export interface SegmentView {
   expansions: number; // ref_expanded-Zähler (Page Faults auf dieses Segment)
   lastEventSeq: number;
   synthetic?: boolean; // aus compaction_completed / frame_popped abgeleitet, nicht aus append
+  /**
+   * Frame-Zugehörigkeit, rekonstruiert aus der Event-Reihenfolge: die API hängt
+   * jedes Working-Segment an den obersten offenen Frame (Spec §2.5), und der
+   * Event-Stream ist strikt geordnet — ein segment_appended zwischen frame_pushed
+   * und frame_popped gehört zu diesem Frame. null = Root.
+   */
+  frameId: string | null;
 }
 
 export interface FrameView {
@@ -53,6 +60,8 @@ export interface LiveState {
   cursor: number;
   segments: Map<string, SegmentView>;
   frames: Map<string, FrameView>;
+  /** Stack der aktuell offenen Frame-IDs (Tip = letztes Element), für Frame-Attribution. */
+  openFrameStack: string[];
   events: EventItem[];
   timeline: TimelinePoint[];
   staticEpoch: number;
@@ -65,6 +74,7 @@ export function emptyLiveState(): LiveState {
     cursor: -1, // Event-seq beginnt bei 0; after_seq ist exklusiv.
     segments: new Map(),
     frames: new Map(),
+    openFrameStack: [],
     events: [],
     timeline: [],
     staticEpoch: 0,
@@ -120,6 +130,7 @@ function applyEvent(state: LiveState, ev: EventItem): void {
         state: "live",
         expansions: 0,
         lastEventSeq: ev.seq,
+        frameId: state.openFrameStack[state.openFrameStack.length - 1] ?? null,
       });
       break;
     }
@@ -168,6 +179,7 @@ function applyEvent(state: LiveState, ev: EventItem): void {
           expansions: 0,
           lastEventSeq: ev.seq,
           synthetic: true,
+          frameId: null,
         });
       }
       state.counters.compactions++;
@@ -182,14 +194,25 @@ function applyEvent(state: LiveState, ev: EventItem): void {
         openedTurn: num(p, "opened_turn"),
         status: "open",
       });
+      state.openFrameStack.push(id);
       break;
     }
     case "frame_popped": {
-      const frame = state.frames.get(str(p, "frame_id"));
+      const frameId = str(p, "frame_id");
+      const frame = state.frames.get(frameId);
       const returnId = str(p, "return_segment_id");
       if (frame) {
         frame.status = "popped";
         frame.returnSegmentId = returnId;
+      }
+      state.openFrameStack = state.openFrameStack.filter((id) => id !== frameId);
+      // Spec §2.5: beim Pop werden alle Segmente des Frames evicted — der Pop emittiert
+      // dafür keine eigenen segment_evicted-Events, also hier nachziehen.
+      for (const seg of state.segments.values()) {
+        if (seg.frameId === frameId && (seg.state === "live" || seg.state === "externalized")) {
+          seg.state = "evicted";
+          seg.lastEventSeq = ev.seq;
+        }
       }
       if (returnId && !state.segments.has(returnId)) {
         // Das Return-Segment erzeugt kein eigenes segment_appended-Event — Platzhalter
@@ -205,6 +228,8 @@ function applyEvent(state: LiveState, ev: EventItem): void {
           expansions: 0,
           lastEventSeq: ev.seq,
           synthetic: true,
+          // Return-Segment landet im Parent-Frame = neuer Stack-Tip nach dem Pop.
+          frameId: state.openFrameStack[state.openFrameStack.length - 1] ?? null,
         });
       }
       break;
@@ -266,6 +291,7 @@ export function applyEvents(prev: LiveState, incoming: EventItem[]): LiveState {
     ...prev,
     segments: new Map(prev.segments),
     frames: new Map(prev.frames),
+    openFrameStack: [...prev.openFrameStack],
     events: [...prev.events],
     timeline: [...prev.timeline],
     counters: { ...prev.counters },

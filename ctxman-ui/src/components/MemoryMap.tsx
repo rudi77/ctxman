@@ -1,13 +1,16 @@
 import { useMemo, useState } from "react";
-import type { SegmentView } from "../state/eventReducer";
+import type { FrameView, SegmentView } from "../state/eventReducer";
 import type { StaticSegmentInput } from "../api/types";
+import { getRecorded } from "../state/contentStore";
 import { kindColor } from "../lib/colors";
 import { formatTokens, shortId } from "../lib/format";
 
 interface Props {
+  sessionId: string;
   segments: SegmentView[];
+  frames: FrameView[];
   staticEpoch: number;
-  /** Bekannte Static-Segmente (nur bei Spielwiesen-Sessions) — sonst Aggregat-Block. */
+  /** Bekannte Static-Segmente (nur bei UI-erstellten Sessions) — sonst Aggregat-Block. */
   knownStatic?: StaticSegmentInput[];
   staticTokensEstimate: number;
   selectedId: string | null;
@@ -15,14 +18,23 @@ interface Props {
   pinnedIds: ReadonlySet<string>;
 }
 
+interface HoverPreview {
+  title: string;
+  meta: string;
+  text: string | null;
+  color: string;
+}
+
 /**
- * Die Memory-Map: das Speicherverwaltungs-Bild der Spec (§1) wörtlich genommen.
- * Static-Region oben (Stack-Analogie), Working Set darunter (Heap). Jedes Segment
- * ist ein Block, Breite ∝ Tokens, Farbe = Kind, Schraffur = externalisiert,
- * ausgegraut/verkleinert = evicted/compacted (Soft-Delete bleibt sichtbar — Audit, I3).
+ * Die Memory-Map: Static-Region (Stack) und Working Set (Heap), das Working Set
+ * sektioniert nach Frames (Root + Subagent-Frames, Spec §2.5). Blockbreite ∝ Tokens,
+ * Farbe = Kind. Hover zeigt den Inhalt (lokal beim Append aufgezeichnet), Klick
+ * öffnet den Inspektor.
  */
 export function MemoryMap({
+  sessionId,
   segments,
+  frames,
   staticEpoch,
   knownStatic,
   staticTokensEstimate,
@@ -31,6 +43,7 @@ export function MemoryMap({
   pinnedIds,
 }: Props) {
   const [showDead, setShowDead] = useState(true);
+  const [hover, setHover] = useState<HoverPreview | null>(null);
 
   const working = useMemo(
     () => segments.filter((s) => s.region === "working").sort((a, b) => a.seq - b.seq),
@@ -42,8 +55,7 @@ export function MemoryMap({
     .reduce((sum, s) => sum + s.tokens, 0);
 
   const maxTokens = Math.max(staticTokensEstimate, ...working.map((s) => s.tokens), 1);
-  // Blockbreite: logarithmisch skaliert, damit ein 9k-Tool-Result die Map nicht sprengt,
-  // kleine Segmente aber klickbar bleiben.
+  // Logarithmische Skala: 9k-Results sprengen die Map nicht, Kleinsegmente bleiben klickbar.
   const widthFor = (tokens: number) => {
     const min = 26;
     const max = 280;
@@ -51,7 +63,59 @@ export function MemoryMap({
     return Math.round(min + f * (max - min));
   };
 
-  const visible = showDead ? working : working.filter((s) => s.state === "live" || s.state === "externalized");
+  // Working Set in Sektionen: Root zuerst, dann Frames in Push-Reihenfolge (openedTurn, id).
+  const sections = useMemo(() => {
+    const byFrame = new Map<string | null, SegmentView[]>();
+    for (const s of working) {
+      const key = s.frameId;
+      const list = byFrame.get(key);
+      if (list) list.push(s);
+      else byFrame.set(key, [s]);
+    }
+    const frameOrder = [...frames].sort(
+      (a, b) => a.openedTurn - b.openedTurn || a.id.localeCompare(b.id),
+    );
+    const result: { frame: FrameView | null; segments: SegmentView[] }[] = [
+      { frame: null, segments: byFrame.get(null) ?? [] },
+    ];
+    for (const f of frameOrder) {
+      const segs = byFrame.get(f.id);
+      if (segs && segs.length > 0) result.push({ frame: f, segments: segs });
+    }
+    return result;
+  }, [working, frames]);
+
+  const previewFor = (s: SegmentView): HoverPreview => {
+    const recorded = getRecorded(sessionId, s.id);
+    const metaParts = [
+      `seq ${s.seq}`,
+      `${formatTokens(s.tokens)} tok`,
+      s.state,
+      recorded?.role ? `role ${recorded.role}` : null,
+      recorded?.toolCallId ? `unit ${recorded.toolCallId}` : null,
+      s.expansions ? `${s.expansions}× expandiert` : null,
+      shortId(s.id),
+    ].filter(Boolean);
+    return {
+      title: s.kind,
+      meta: metaParts.join(" · "),
+      text: recorded?.content
+        ? recorded.content
+        : s.synthetic && s.kind === "compaction_summary"
+          ? "(Summary-Inhalt liegt im Service — Quellsegmente wurden kompaktiert)"
+          : null,
+      color: kindColor(s.kind),
+    };
+  };
+
+  const staticPreview = (entry: StaticSegmentInput): HoverPreview => ({
+    title: entry.kind,
+    meta: [entry.source ? `source ${entry.source}` : null, `~${formatTokens(Math.round(entry.content.length / 4))} tok`, "immutable (I1)"]
+      .filter(Boolean)
+      .join(" · "),
+    text: entry.content,
+    color: kindColor(entry.kind),
+  });
 
   const renderBlock = (s: SegmentView) => {
     const dead = s.state === "evicted" || s.state === "compacted";
@@ -69,7 +133,8 @@ export function MemoryMap({
         key={s.id}
         className={classes}
         style={{ width: widthFor(s.tokens), background: kindColor(s.kind) }}
-        title={`${s.kind} · seq ${s.seq} · ${formatTokens(s.tokens)} tok · ${s.state}${s.expansions ? ` · ${s.expansions}× expandiert` : ""} · ${shortId(s.id)}`}
+        onMouseEnter={() => setHover(previewFor(s))}
+        onMouseLeave={() => setHover(null)}
         onClick={() => onSelect(selectedId === s.id ? null : s)}
       >
         {pinnedIds.has(s.id) && <span className="pin">📌</span>}
@@ -87,43 +152,119 @@ export function MemoryMap({
 
   return (
     <div>
+      {/* ---------- Static-Region, gruppiert nach source ---------- */}
       <div className="memmap-region-label">
-        <span>Static Region · Epoche {staticEpoch} · {formatTokens(staticTokensEstimate)} tok · immutable (I1)</span>
+        <span>
+          Static Region · Epoche {staticEpoch} · {formatTokens(staticTokensEstimate)} tok · immutable (I1)
+        </span>
         <span className="line" />
       </div>
-      <div className="memmap">
-        {knownStatic && knownStatic.length > 0 ? (
-          knownStatic.map((s, i) => (
-            <div
-              key={i}
-              className="memblock"
-              style={{ width: widthFor(Math.max(40, Math.round(s.content.length / 4))), background: kindColor(s.kind) }}
-              title={`${s.kind}${s.source ? ` · source ${s.source}` : ""} · ~${formatTokens(Math.round(s.content.length / 4))} tok`}
-            >
-              <span className="blk-label">{s.source ?? s.kind.replace(/_/g, " ")}</span>
+      {knownStatic && knownStatic.length > 0 ? (
+        Array.from(
+          knownStatic.reduce((acc, entry) => {
+            const key = entry.source ?? "(ohne source)";
+            acc.set(key, [...(acc.get(key) ?? []), entry]);
+            return acc;
+          }, new Map<string, StaticSegmentInput[]>()),
+        ).map(([source, entries]) => (
+          <div key={source} className="memmap-section static">
+            <div className="section-head">
+              <span className="section-name">⚙ {source}</span>
+              <span className="section-meta">{entries.length} Segment(e)</span>
             </div>
-          ))
-        ) : (
+            <div className="memmap">
+              {entries.map((entry, i) => (
+                <div
+                  key={i}
+                  className="memblock"
+                  style={{
+                    width: widthFor(Math.max(40, Math.round(entry.content.length / 4))),
+                    background: kindColor(entry.kind),
+                  }}
+                  onMouseEnter={() => setHover(staticPreview(entry))}
+                  onMouseLeave={() => setHover(null)}
+                >
+                  <span className="blk-label">{entry.kind.replace(/_/g, " ")}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        ))
+      ) : (
+        <div className="memmap">
           <div
             className="memblock"
             style={{ width: widthFor(staticTokensEstimate), background: kindColor("system_prompt") }}
-            title={`Static-Region (Aggregat) · ~${formatTokens(staticTokensEstimate)} tok — Segmente nur für Spielwiesen-Sessions bekannt`}
+            onMouseEnter={() =>
+              setHover({
+                title: "Static-Region (Aggregat)",
+                meta: `~${formatTokens(staticTokensEstimate)} tok · Epoche ${staticEpoch}`,
+                text: "Die einzelnen Static-Segmente sind nur für Sessions bekannt, die diese UI selbst angelegt hat (die Static-Region erzeugt keine Events).",
+                color: kindColor("system_prompt"),
+              })
+            }
+            onMouseLeave={() => setHover(null)}
           >
             <span className="blk-label">static (aggregiert)</span>
           </div>
-        )}
-      </div>
+        </div>
+      )}
 
+      {/* ---------- Working Set, sektioniert nach Frames ---------- */}
       <div className="memmap-region-label" style={{ marginTop: 16 }}>
-        <span>Working Set · {working.filter((s) => s.state === "live" || s.state === "externalized").length} render-eligible · {formatTokens(liveTokens)} tok</span>
+        <span>
+          Working Set · {working.filter((s) => s.state === "live" || s.state === "externalized").length} render-eligible ·{" "}
+          {formatTokens(liveTokens)} tok
+        </span>
         <span className="line" />
         <button className="small" onClick={() => setShowDead((v) => !v)}>
           {showDead ? "evicted/compacted ausblenden" : "evicted/compacted einblenden"}
         </button>
       </div>
-      <div className="memmap">
-        {visible.length === 0 && <span className="muted">Noch keine Working-Segmente — auf der Spielwiese anhängen.</span>}
-        {visible.map(renderBlock)}
+
+      {working.length === 0 && (
+        <span className="muted">Noch keine Working-Segmente — auf der Spielwiese anhängen oder ein Szenario starten.</span>
+      )}
+
+      {sections.map(({ frame, segments: segs }) => {
+        const visible = showDead ? segs : segs.filter((s) => s.state === "live" || s.state === "externalized");
+        if (visible.length === 0 && frame === null && sections.length > 1) return null;
+        if (visible.length === 0 && frame !== null) return null;
+        const tokens = segs
+          .filter((s) => s.state === "live" || s.state === "externalized")
+          .reduce((sum, s) => sum + s.tokens, 0);
+        return (
+          <div key={frame?.id ?? "root"} className={`memmap-section ${frame?.status === "popped" ? "popped" : ""}`}>
+            <div className="section-head">
+              <span className="section-name">
+                {frame === null ? "⌂ Root" : `🪆 Frame „${frame.label}"`}
+              </span>
+              <span className="section-meta">
+                {frame !== null && (frame.status === "open" ? "offen · " : "gepoppt · ")}
+                {segs.length} Segmente · {formatTokens(tokens)} tok live
+              </span>
+            </div>
+            <div className="memmap">{visible.map(renderBlock)}</div>
+          </div>
+        );
+      })}
+
+      {/* ---------- Hover-Preview: was steht drin? ---------- */}
+      <div className={`memmap-preview ${hover ? "active" : ""}`}>
+        {hover ? (
+          <>
+            <div className="preview-head">
+              <span className="swatch" style={{ background: hover.color }} />
+              <b>{hover.title}</b>
+              <span className="preview-meta">{hover.meta}</span>
+            </div>
+            <div className="preview-text">
+              {hover.text ?? "(Inhalt nicht aufgezeichnet — Segment stammt nicht aus dieser UI. Externalisierte Inhalte per Klick → Inspektor → expand_context_ref laden.)"}
+            </div>
+          </>
+        ) : (
+          <span className="muted">Über einen Block fahren, um den Inhalt zu sehen — Klick öffnet den Inspektor.</span>
+        )}
       </div>
 
       <div className="memmap-legend">

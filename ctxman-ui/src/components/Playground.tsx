@@ -3,6 +3,7 @@ import { api } from "../api/client";
 import type { AppendSegmentInput, SessionDetail, StaticSegmentInput } from "../api/types";
 import type { LiveState } from "../state/eventReducer";
 import { DEFAULT_WATERMARKS, type KnownSession } from "../state/sessionStore";
+import { recordSegments } from "../state/contentStore";
 import { loremTokens } from "../lib/format";
 
 interface ConsoleEntry {
@@ -255,7 +256,21 @@ function AppendPanel({
 
   const append = async (segments: AppendSegmentInput[], title: string, pinIdx: number[] = []) => {
     const res = await run(title, () => api.appendSegments(sessionId, segments));
-    if (res) for (const i of pinIdx) onPinned(res.segment_ids[i]);
+    if (res) {
+      // Inhalte lokal mitschreiben — der Event-Stream trägt sie nicht (Memory-Map/Inspektor).
+      recordSegments(
+        sessionId,
+        segments.map((s, i) => ({
+          id: res.segment_ids[i],
+          content: s.content ?? "",
+          role: s.role,
+          toolCallId: s.tool_call_id,
+          source: s.source,
+          pinned: s.pinned,
+        })),
+      );
+      for (const i of pinIdx) onPinned(res.segment_ids[i]);
+    }
   };
 
   const toolUnit = (tokens: number) => {
@@ -409,7 +424,17 @@ function GcFramePanel({
         <div className="col">
           <textarea rows={2} value={returnContent} onChange={(e) => setReturnContent(e.target.value)} />
           <div className="row">
-            <button onClick={() => void run(`frame pop "${tip.label}"`, () => api.popFrame(sessionId, tip.id, returnContent))}>
+            <button
+              onClick={() =>
+                void run(`frame pop "${tip.label}"`, async () => {
+                  const res = await api.popFrame(sessionId, tip.id, returnContent);
+                  recordSegments(sessionId, [
+                    { id: res.return_segment_id, content: returnContent, role: "assistant" },
+                  ]);
+                  return res;
+                })
+              }
+            >
               ⤴ Pop „{tip.label}" (oberster Frame)
             </button>
             <span className="muted">{openFrames.length} offen</span>
