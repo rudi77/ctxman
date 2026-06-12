@@ -12,10 +12,14 @@ namespace Ctxman.Api.Auth;
 /// ausschließlich aus dieser Auflösung, nie aus dem Request-Body (Spec §4 / §10).
 ///
 /// Modus <see cref="AuthMode.None"/>: konfigurierter Header (<see cref="AuthOptions.TenantHeader"/>),
-/// sonst <see cref="AuthOptions.DefaultTenant"/>. Die Modi <see cref="AuthMode.ApiKey"/> und
-/// <see cref="AuthMode.Jwt"/> sind in diesem Workpaket nicht implementiert und werfen
-/// <see cref="NotSupportedException"/> (kein stilles Zurückfallen auf <c>none</c>); ihre Aktivierung
-/// ist eine reine Konfigurations-/Registrierungs-Erweiterung.
+/// sonst <see cref="AuthOptions.DefaultTenant"/>. Modus <see cref="AuthMode.ApiKey"/>: liest den
+/// Key aus <c>X-Api-Key</c> (Vorrang) oder <c>Authorization: Bearer &lt;key&gt;</c> und schlägt ihn
+/// im konfigurierten <see cref="AuthOptions.ApiKeys"/>-Dictionary nach — fehlt der Key oder ist er
+/// unbekannt, antwortet die Middleware direkt mit 401 (kein Weiterleiten an <c>_next</c>). Modus
+/// <see cref="AuthMode.Jwt"/>: setzt voraus, dass <c>UseAuthentication</c> den Token bereits
+/// validiert und <c>context.User</c> gesetzt hat — ist der User nicht authentifiziert oder fehlt
+/// der Tenant-Claim (<see cref="AuthOptions.JwtOptions.TenantClaim"/>), antwortet die Middleware
+/// direkt mit 401. Bei allen drei Modi gibt es kein stilles Zurückfallen auf einen anderen Modus.
 /// </summary>
 public sealed class TenantResolutionMiddleware
 {
@@ -30,22 +34,85 @@ public sealed class TenantResolutionMiddleware
 
     public async Task InvokeAsync(HttpContext context, ITenantContext tenantContext)
     {
-        // Spec §4.1: Tenant-Auflösung ist modusabhängig; der restliche Code ist in allen Modi identisch.
-        var tenantId = _options.Mode switch
+        // Spec §4.1: Tenant-Auflösung ist modusabhängig.
+        switch (_options.Mode)
         {
-            AuthMode.None => ResolveFromHeaderOrDefault(context),
-            // M5: api_key/jwt noch nicht implementiert — bewusst kein Fallback auf none (Spec §4.1).
-            AuthMode.ApiKey => throw new NotSupportedException(
-                "Auth mode 'api_key' is not implemented in this build."),
-            AuthMode.Jwt => throw new NotSupportedException(
-                "Auth mode 'jwt' is not implemented in this build."),
-            _ => throw new NotSupportedException($"Unknown auth mode '{_options.Mode}'."),
-        };
+            case AuthMode.None:
+            {
+                // Spec §10: dieselbe scoped-Instanz, die der CtxmanDbContext für seinen Query Filter liest.
+                ((TenantContext)tenantContext).TenantId = ResolveFromHeaderOrDefault(context);
+                await _next(context);
+                break;
+            }
 
-        // Spec §10: dieselbe scoped-Instanz, die der CtxmanDbContext für seinen Query Filter liest.
-        ((TenantContext)tenantContext).TenantId = tenantId;
+            case AuthMode.ApiKey:
+            {
+                // Spec §4.1 / §10: Key→Tenant-Mapping; Tenant kommt ausschließlich aus der Konfiguration.
+                var key = ExtractApiKey(context);
+                if (key is null || !_options.ApiKeys.TryGetValue(key, out var mappedTenant))
+                {
+                    // Fehlender oder unbekannter Key → 401, kein Weiterleiten an _next. Spec §4.1.
+                    context.Response.Headers["WWW-Authenticate"] = "Bearer realm=\"ctxman\"";
+                    context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+                    return;
+                }
 
-        await _next(context);
+                ((TenantContext)tenantContext).TenantId = mappedTenant;
+                await _next(context);
+                break;
+            }
+
+            case AuthMode.Jwt:
+            {
+                // Spec §4.1: JwtBearer (UseAuthentication) läuft vor dieser Middleware und setzt
+                // context.User wenn der Token valide ist. Fehlender/ungültiger Token → kein
+                // IsAuthenticated → 401 short-circuit (kein Weiterleiten an _next). Spec §10.
+                if (context.User?.Identity?.IsAuthenticated != true)
+                {
+                    context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+                    return;
+                }
+
+                // Spec §4.1: Tenant-Claim-Name ist konfigurierbar (Default "tenant_id").
+                var tenant = context.User.FindFirst(_options.Jwt.TenantClaim)?.Value;
+                if (string.IsNullOrEmpty(tenant))
+                {
+                    context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+                    return;
+                }
+
+                ((TenantContext)tenantContext).TenantId = tenant;
+                await _next(context);
+                break;
+            }
+
+            default:
+                throw new NotSupportedException($"Unknown auth mode '{_options.Mode}'.");
+        }
+    }
+
+    /// <summary>
+    /// Extrahiert den API-Key aus dem Request. Spec §4.1: X-Api-Key hat Vorrang vor
+    /// Authorization: Bearer (deterministisch, damit Tests vorhersehbar sind).
+    /// </summary>
+    private static string? ExtractApiKey(HttpContext context)
+    {
+        // Spec §4.1: X-Api-Key zuerst, dann Authorization: Bearer <key>.
+        if (context.Request.Headers.TryGetValue("X-Api-Key", out var xApiKey))
+        {
+            var v = xApiKey.ToString();
+            if (!string.IsNullOrWhiteSpace(v))
+                return v;
+        }
+
+        if (context.Request.Headers.TryGetValue("Authorization", out var auth))
+        {
+            var v = auth.ToString();
+            if (v.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
+                return v["Bearer ".Length..].Trim();
+        }
+
+        return null;
     }
 
     private string ResolveFromHeaderOrDefault(HttpContext context)

@@ -1,5 +1,6 @@
 using Ctxman.Api.Gc;
 using Ctxman.Core;
+using Ctxman.Core.Auth;
 using Ctxman.Core.Gc;
 using Ctxman.Core.Persistence;
 using Microsoft.EntityFrameworkCore;
@@ -17,7 +18,8 @@ public static class GcEndpoints
 {
     public static IEndpointRouteBuilder MapGcEndpoints(this IEndpointRouteBuilder app)
     {
-        app.MapPost("/v1/sessions/{sid}/gc", TriggerGcAsync);
+        app.MapPost("/v1/sessions/{sid}/gc", TriggerGcAsync)
+            .WithMetadata(new ResourceAction("gc", null, "write")); // Spec §4.1
         return app;
     }
 

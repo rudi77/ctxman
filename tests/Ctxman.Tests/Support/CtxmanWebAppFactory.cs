@@ -184,6 +184,41 @@ public sealed class CtxmanWebAppFactory : WebApplicationFactory<Program>
         {
             options.DefaultTenant = tenant;
         }
+
+        // Spec §4.1: api_key-Modus — alle auth:api_keys:<key>-Einträge in ApiKeys übernehmen.
+        const string apiKeysPrefix = "auth:api_keys:";
+        foreach (var (key, value) in _settings)
+        {
+            if (key.StartsWith(apiKeysPrefix, StringComparison.OrdinalIgnoreCase) && value is not null)
+            {
+                var apiKey = key[apiKeysPrefix.Length..];
+                if (!string.IsNullOrEmpty(apiKey))
+                {
+                    options.ApiKeys[apiKey] = value;
+                }
+            }
+        }
+
+        // Spec §4.1: jwt-Modus — auth:jwt:*-Einträge in Jwt übernehmen.
+        if (_settings.TryGetValue("auth:jwt:authority", out var authority) && authority is not null)
+        {
+            options.Jwt.Authority = authority;
+        }
+
+        if (_settings.TryGetValue("auth:jwt:issuer", out var issuer) && issuer is not null)
+        {
+            options.Jwt.Issuer = issuer;
+        }
+
+        if (_settings.TryGetValue("auth:jwt:audience", out var audience) && audience is not null)
+        {
+            options.Jwt.Audience = audience;
+        }
+
+        if (_settings.TryGetValue("auth:jwt:tenant_claim", out var tenantClaim) && tenantClaim is not null)
+        {
+            options.Jwt.TenantClaim = tenantClaim;
+        }
     }
 
     private static void RemoveDbContextRegistrations(IServiceCollection services)

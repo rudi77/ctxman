@@ -1,5 +1,7 @@
 using System.Text.Json;
+using Ctxman.Api.Observability;
 using Ctxman.Core;
+using Ctxman.Core.Auth;
 using Ctxman.Core.Domain;
 using Ctxman.Core.Persistence;
 using Ctxman.Core.Storage;
@@ -27,7 +29,8 @@ public static class RefEndpoints
 
     public static IEndpointRouteBuilder MapRefEndpoints(this IEndpointRouteBuilder app)
     {
-        app.MapGet("/v1/sessions/{sid}/refs/{segment_id}", ExpandRefAsync);
+        app.MapGet("/v1/sessions/{sid}/refs/{segment_id}", ExpandRefAsync)
+            .WithMetadata(new ResourceAction("ref", null, "read")); // Spec §4.1
         return app;
     }
 
@@ -37,6 +40,7 @@ public static class RefEndpoints
         CtxmanDbContext db,
         ITenantContext tenant,
         IBlobStore blobStore,
+        CtxmanMetrics metrics,
         CancellationToken ct)
     {
         if (!Ulid.TryParse(sid, out var sessionId) || !Ulid.TryParse(segment_id, out var segmentId))
@@ -100,6 +104,9 @@ public static class RefEndpoints
             });
 
             await db.SaveChangesAsync(ct);
+
+            // Spec §6: page fault (successful ref expansion).
+            metrics.RecordPageFault();
 
             return Results.Ok(new ExpandRefResponse(content, contentType));
         }

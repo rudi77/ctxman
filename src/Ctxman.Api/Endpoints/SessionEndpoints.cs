@@ -1,6 +1,8 @@
 using Ctxman.Api.Idempotency;
 using Ctxman.Api.Promotion;
+using Ctxman.Api.Storage;
 using Ctxman.Core;
+using Ctxman.Core.Auth;
 using Ctxman.Core.Domain;
 using Ctxman.Core.Persistence;
 using Ctxman.Core.Tokenization;
@@ -19,9 +21,12 @@ public static class SessionEndpoints
 {
     public static IEndpointRouteBuilder MapSessionEndpoints(this IEndpointRouteBuilder app)
     {
-        app.MapPost("/v1/sessions", CreateSessionAsync);
-        app.MapGet("/v1/sessions/{sid}", GetSessionAsync);
-        app.MapPost("/v1/sessions/{sid}/archive", ArchiveSessionAsync);
+        app.MapPost("/v1/sessions", CreateSessionAsync)
+            .WithMetadata(new ResourceAction("session", null, "write")); // Spec §4.1
+        app.MapGet("/v1/sessions/{sid}", GetSessionAsync)
+            .WithMetadata(new ResourceAction("session", null, "read")); // Spec §4.1
+        app.MapPost("/v1/sessions/{sid}/archive", ArchiveSessionAsync)
+            .WithMetadata(new ResourceAction("session", null, "archive")); // Spec §4.1
         return app;
     }
 
@@ -172,6 +177,8 @@ public static class SessionEndpoints
         ITenantContext tenant,
         IdempotencyService idempotency,
         PromotionService promotionService,
+        RetentionConfig retention,
+        IColdStorageExporter coldStorageExporter,
         CancellationToken ct)
     {
         // Spec §4.4: Idempotency-Key ist auf state-mutierenden Endpunkten Pflicht. Fehlend/leer ⇒ 400.
@@ -212,6 +219,14 @@ public static class SessionEndpoints
                 && (s.State == SegmentState.Live || s.State == SegmentState.Externalized))
             .OrderBy(s => s.Seq)
             .ToListAsync(ct);
+
+        // Spec §7.1: Blob-Keys aus den Promotion-Kandidaten ableiten (Working + Live/Externalized
+        // deckt alle blob-referenzierenden Segmente ab, die beim Archivieren relevant sind).
+        var blobKeys = promotionCandidates
+            .Where(s => s.BlobRef != null)
+            .Select(s => s.BlobRef!.Key)
+            .Distinct()
+            .ToList();
 
         // Spec §3.3: LLM-Call AUSSERHALB der DB-Transaktion (keine langen Locks während Netzwerk-I/O).
         var pendingPromotions = await promotionService.ExtractAndSinkAsync(
@@ -267,6 +282,20 @@ public static class SessionEndpoints
 
         await db.SaveChangesAsync(ct);
         await tx.CommitAsync(ct);
+
+        // Spec §7.1: Cold-Storage-Export nach erfolgreichem Commit (best-effort — Session ist
+        // bereits archiviert; ein Export-Fehler darf kein 500 produzieren).
+        if (retention.ArchivedSessionBlobs == "cold_storage" && blobKeys.Count > 0)
+        {
+            try
+            {
+                await coldStorageExporter.ExportSessionBlobsAsync(tenant.TenantId, session.Id, blobKeys, ct);
+            }
+            catch
+            {
+                // Spec §7.1: best-effort — Export-Fehler loggen ist optional; Archive bereits committed.
+            }
+        }
 
         return Results.NoContent();
     }

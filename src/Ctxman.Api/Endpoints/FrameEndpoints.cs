@@ -2,6 +2,7 @@ using System.Text.Json;
 using Ctxman.Api.Idempotency;
 using Ctxman.Api.Promotion;
 using Ctxman.Core;
+using Ctxman.Core.Auth;
 using Ctxman.Core.Domain;
 using Ctxman.Core.Persistence;
 using Microsoft.AspNetCore.Mvc;
@@ -25,8 +26,10 @@ public static class FrameEndpoints
 
     public static IEndpointRouteBuilder MapFrameEndpoints(this IEndpointRouteBuilder app)
     {
-        app.MapPost("/v1/sessions/{sid}/frames", PushFrameAsync);
-        app.MapDelete("/v1/sessions/{sid}/frames/{fid}", PopFrameAsync);
+        app.MapPost("/v1/sessions/{sid}/frames", PushFrameAsync)
+            .WithMetadata(new ResourceAction("frame", null, "write")); // Spec §4.1
+        app.MapDelete("/v1/sessions/{sid}/frames/{fid}", PopFrameAsync)
+            .WithMetadata(new ResourceAction("frame", null, "delete")); // Spec §4.1
         return app;
     }
 

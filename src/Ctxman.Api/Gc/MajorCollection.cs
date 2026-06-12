@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using Ctxman.Api.Observability;
 using Ctxman.Core;
 using Ctxman.Core.Compaction;
 using Ctxman.Core.Domain;
@@ -27,6 +28,7 @@ public sealed class MajorCollection
     private readonly ICompactionModel _compactionModel;
     private readonly IPromotionSink _promotionSink;
     private readonly ITokenCounter _tokenCounter;
+    private readonly CtxmanMetrics _metrics;
     private readonly ILogger<MajorCollection> _logger;
 
     // Spec §6: Event-Payload ist kanonisches snake_case-JSON (gleiche Optionen wie die Endpunkte).
@@ -40,12 +42,14 @@ public sealed class MajorCollection
         ICompactionModel compactionModel,
         IPromotionSink promotionSink,
         ITokenCounter tokenCounter,
+        CtxmanMetrics metrics,
         ILogger<MajorCollection> logger)
     {
         _scopeFactory = scopeFactory;
         _compactionModel = compactionModel;
         _promotionSink = promotionSink;
         _tokenCounter = tokenCounter;
+        _metrics = metrics;
         _logger = logger;
     }
 
@@ -246,6 +250,9 @@ public sealed class MajorCollection
 
             await db.SaveChangesAsync(ct);
             await tx.CommitAsync(ct);
+
+            // Spec §6: observe compaction ratio after successful commit.
+            _metrics.ObserveCompaction(plan.TokensBefore, summaryTokens);
 
             _logger.LogInformation(
                 "Major collection completed for session {SessionId}: {SourceCount} segments → 1 summary " +
