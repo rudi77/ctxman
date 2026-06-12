@@ -32,7 +32,7 @@ Stateful .NET-9-Service für LLM-Context-Verwaltung (Stack/Heap/GC-Metapher). ct
   `Idempotency-Key` (Pflicht bei `turn_advance=true` auf render).
 - Spec-Invarianten in Code: Kommentare `// Spec §x.y` bei nicht-offensichtlichen Stellen.
 
-## Bereits implementiert (WP1–WP6)
+## Bereits implementiert (WP1–WP7 — Spec v0.2 vollständig)
 
 **Sessions** (`SessionEndpoints`):
 - `POST /v1/sessions`, `GET /v1/sessions/{sid}`
@@ -108,16 +108,32 @@ Stateful .NET-9-Service für LLM-Context-Verwaltung (Stack/Heap/GC-Metapher). ct
 - **`PromotionService`** (`src/Ctxman.Api/Promotion/`): die geteilte Fact-Extraction-+-Sink-Logik,
   die Frame-Pop UND Archive nutzen (baut auf dem `IPromotionSink`/`ICompactionModel`-Pfad aus WP5 auf).
 
+**Härtung: Auth / Azure-Blob / Metriken / Retention (WP7, PR #6 gemerged)** — `src/Ctxman.Api/Auth/`,
+`Storage/`, `Observability/`, `Gc/RetentionOptions.cs`:
+- **Auth-Modi** (Spec §4.1): `api_key` / `jwt`, konfiguriert via `AuthOptions` (`AuthMode` über
+  `AuthModeTypeConverter`/`EnumWire`). Security-Pipeline (Spec §8) als Middleware-Kette
+  `TenantResolutionMiddleware → CtxmanAuthorizationMiddleware`; `ICtxmanAuthorizationHandler`
+  (Core) → `AllowAllWithinTenantAuthorizationHandler` (Default, tenant-scoped).
+- **Azure-Blob** (Spec §7): `AzureBlobStore` über `IAzureBlobGateway`/`AzureBlobContainerGateway`
+  als produktiver `IBlobStore` neben `FileSystemBlobStore`. Tests gegen `InMemoryAzureBlobGateway`
+  — kein echtes Azure in der Suite.
+- **Retention / Cold-Storage** (Spec §7.1): `RetentionOptions` + `IColdStorageExporter`/
+  `ColdStorageExporter` (`ColdStorageOptions`). Archive-Pfad exportiert bei
+  `archived_session_blobs == "cold_storage"` (das WP6 noch ausließ); der WP4-Blob-Sweep
+  respektiert die Retention.
+- **Prometheus-Metriken** (Spec §6): `Observability/CtxmanMetrics.cs`, `/metrics`-Endpoint.
+
 **Cross-cutting**:
 - `ITokenCounter` → `HeuristicTokenCounter` (Singleton)
-- `ICtxmanAuthorizationHandler` → `AllowAllWithinTenantAuthorizationHandler`
+- `ICtxmanAuthorizationHandler` → `AllowAllWithinTenantAuthorizationHandler` (WP7: hinter der
+  `api_key`/`jwt`-Auth-Pipeline)
 - `Program` ist `public partial` (für `WebApplicationFactory`)
 
-## Noch offen (nicht vorgezogen implementieren)
+## Noch offen
 
-- **WP7** (letztes Paket) — Härtung: Auth (`api_key`/`jwt`), Autorisierung, Azure-Blob,
-  Prometheus-Metriken, Retention/Cold-Storage (M5). Spec §4.1/§6/§7/§7.1/§8/§10.
-- Siehe `docs/forge-work/wp7-prompt.md` und `wp7-acceptance.md`.
+- **Keine Workpakete mehr offen** — WP1–WP7 (Spec v0.2, Milestones M1a–M5) sind implementiert
+  und in `main` gemerged. Neue Arbeit ist Feature-/Bugfix-getrieben, kein vorgezeichneter WP-Plan
+  mehr. Bei Spec-Erweiterung: erst `docs/ctxman-spec.md` + ein neues `docs/forge-work/`-Paket.
 
 ## Test-Patterns
 
@@ -145,6 +161,9 @@ Stateful .NET-9-Service für LLM-Context-Verwaltung (Stack/Heap/GC-Metapher). ct
 | GC (Minor/Major, Queue, Worker, Locks) | `src/Ctxman.Core/Gc/*.cs`, `src/Ctxman.Api/Gc/*.cs` |
 | Compaction-LLM / Promotion-Sink | `src/Ctxman.{Core,Api}/Compaction/*.cs`, `.../Promotion/*.cs` |
 | Frames (Push/Pop/Scope/Archive) | `FrameEndpoints.cs`, `PromotionService.cs`, `RenderPlanner.cs`, `Session.cs` |
+| Auth (api_key/jwt, Authz, Pipeline) | `src/Ctxman.Api/Auth/*.cs`, `Ctxman.Core/Auth/ICtxmanAuthorizationHandler.cs` |
+| Azure-Blob / Cold-Storage / Retention | `src/Ctxman.Api/Storage/AzureBlob*.cs`, `ColdStorage*.cs`, `Gc/RetentionOptions.cs` |
+| Prometheus-Metriken | `src/Ctxman.Api/Observability/CtxmanMetrics.cs` |
 | Refs/Events/GC-Endpoints | `RefEndpoints.cs`, `EventEndpoints.cs`, `GcEndpoints.cs` |
 | Blob-Sweep | `src/Ctxman.Api/Gc/BlobSweeper.cs` + `BlobSweepWorker.cs` |
 | API-Endpoint-Muster | bestehende `*Endpoints.cs` im gleichen Stil erweitern |
