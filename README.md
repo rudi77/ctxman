@@ -28,31 +28,25 @@ Wichtige Konzepte:
 
 ## Implementierungsstand
 
-Aktuell umgesetzt (Milestone **M1 — Core Store**, Workpakete WP1–WP3):
+**Spec v0.2 ist vollständig implementiert** (Workpakete WP1–WP7, Milestones M1a–M5). Alle Server-seitigen Features der Spezifikation sind live und durch Tests abgedeckt.
 
 | Bereich | Status |
 |---------|--------|
-| Domänenmodell (Session, Segment, Frame, Policy) | ✅ |
-| EF Core + Postgres (Npgsql), Tenant-Isolation | ✅ |
-| Auth-Modus `none` + Tenant-Resolution-Pipeline | ✅ |
-| `POST/GET /v1/sessions` | ✅ |
-| `POST /v1/sessions/{sid}/segments` (Single + Batch) | ✅ |
-| `POST /v1/sessions/{sid}/blobs` (Filesystem-Store) | ✅ |
-| Idempotenz + Optimistic Concurrency (`If-Match`) | ✅ |
-| `POST /v1/sessions/{sid}/render` (Anthropic + OpenAI) | ✅ |
-| `PUT /v1/sessions/{sid}/static-segments` (Epoch-Bump) | ✅ |
-| Render-Determinismus + Golden-File-Tests | ✅ |
-| Event-Outbox (`render_served`, `static_epoch_bumped`) | ✅ |
+| Domänenmodell (Session, Segment, Frame, Policy) | ✅ WP1 |
+| EF Core + Postgres (Npgsql), Tenant-Isolation, Idempotenz, Optimistic Concurrency | ✅ WP1–WP2 |
+| Sessions / Segments / Blobs (Filesystem-Store) | ✅ WP1–WP2 |
+| `render` (Anthropic + OpenAI), Static-Epoch-Bump, Render-Determinismus (Golden-Files) | ✅ WP3 |
+| **Minor GC** — TTL-Eviction, Externalisierung, Watermarks, Page-Fault (`GET /refs`), Pin/Unpin, Events/SSE, Blob-Mark-and-Sweep | ✅ WP4 |
+| **Major GC** — Compaction + Promotion (`ICompactionModel`, write-only `IPromotionSink`), Version-Isolation | ✅ WP5 |
+| **Frames** — Push/Pop (LIFO), Frame-Scope-Render, Session-`archive` mit terminaler Promotion | ✅ WP6 |
+| **Härtung** — Auth `api_key`/`jwt`, Autorisierungs-Pipeline, Azure-Blob-Adapter, Cold-Storage/Retention, Prometheus-Metriken | ✅ WP7 |
 
-Noch nicht implementiert (geplante Milestones M2–M5):
+**273 Tests, alle grün** (`dotnet test ctxman.sln`).
 
-- Garbage Collection (Minor/Major), `GET /refs`, `POST /gc`
-- Frames (Push/Pop), Pin-Endpunkte
-- Events-HTTP / SSE, Archivierung
-- Auth-Modi `api_key` und `jwt`
-- Client-SDKs (Python, C#)
+Bewusst **nicht** Teil dieses Service (Non-Goals der Spec):
 
-129 Tests, alle grün (`dotnet test ctxman.sln`).
+- Client-SDKs (Python / C#) — geplant, aber außerhalb v0.2.
+- LLM-Gateway-Funktionalität — ctxman ruft das Agent-Modell nie auf (N1).
 
 ---
 
@@ -81,27 +75,30 @@ docs/
 ## Schnellstart
 
 ```powershell
-# Repository klonen und ins Verzeichnis wechseln
 cd ctxman
 
-# Build + Tests
+# Build + Tests (Tests brauchen KEIN Postgres — SQLite in-memory)
 dotnet build ctxman.sln
 dotnet test ctxman.sln
 
-# API starten (benötigt laufende Postgres-Instanz)
+# Postgres bereitstellen (passt zum Default-Connection-String)
+docker run -d --name ctxman-pg -e POSTGRES_USER=ctxman -e POSTGRES_PASSWORD=ctxman `
+  -e POSTGRES_DB=ctxman -p 5432:5432 postgres:16
+
+# Schema anlegen (siehe Hinweis unten), dann API starten
 dotnet run --project src/Ctxman.Api
 ```
 
-Standard-URL: `http://localhost:5000` (oder der in `launchSettings.json` konfigurierte Port).
+Standard-URL: **`http://localhost:5291`** (HTTP) bzw. `https://localhost:7182` (siehe `launchSettings.json`).
 
 Health-Check:
 
 ```powershell
-curl http://localhost:5000/healthz
+curl http://localhost:5291/healthz
 # {"status":"ok","auth_mode":"none"}
 ```
 
-> **Hinweis:** Beim Start wird das DB-Schema nicht automatisch angelegt (`Program.cs` ruft kein `Migrate`/`EnsureCreated` auf). Für den lokalen Betrieb muss Postgres erreichbar sein und das Schema bereitstehen (EF-Migrations folgen in einem späteren Workpaket).
+> **⚠️ DB-Schema:** Beim Start wird das Schema **nicht** automatisch angelegt (`Program.cs` ruft bewusst kein `Migrate`/`EnsureCreated` — die Tests verwalten das Schema selbst). Gegen ein frisches Postgres müssen die Tabellen vorab existieren. Aktuell sind **keine EF-Migrations** eingecheckt; das Schema lässt sich code-first per `dotnet ef migrations add Initial --project src/Ctxman.Api` + `dotnet ef database update` erzeugen, oder für lokale Dev-Zwecke über einen einmaligen `EnsureCreated()`-Aufruf.
 
 ---
 
@@ -127,50 +124,57 @@ Einstellungen über `appsettings.json` und Umgebungsvariablen:
 
 | Sektion | Beschreibung |
 |---------|--------------|
-| `auth.mode` | `none` (Default), später `api_key` / `jwt` |
+| `auth.mode` | `none` (Default) / `api_key` / `jwt` |
 | `auth.tenant_header` | Header für Tenant-Auflösung im Modus `none` |
 | `auth.default_tenant` | Fallback-Tenant ohne Header |
 | `ConnectionStrings:ctxman` | Postgres-Verbindung (Npgsql) |
-| `blobstore:Root` | Wurzelverzeichnis für den Filesystem-Blob-Store (Dev) |
+| `blobstore:provider` | `fs` (Default, Filesystem) / `azure-blob` |
+| `blobstore:Root` | Wurzelverzeichnis des Filesystem-Blob-Stores (Dev) |
+| `blobstore:ConnectionString` / `ContainerName` | Azure-Blob-Adapter (Provider `azure-blob`) |
+| `compaction:<provider>:api_key` u.a. | LLM-Credentials für **Major GC** (Compaction/Promotion). Nur nötig, wenn `POST /gc {major}` genutzt wird — Render/Minor-GC brauchen keinen LLM-Call. |
 
-JSON-Wire-Format: **snake_case** Property-Namen.
+JSON-Wire-Format: **snake_case** Property-Namen. Credentials kommen ausschließlich aus der Standard-.NET-Konfigurationskette (Non-Goal N5 — keine eigene Credential-Logik).
 
 ---
 
-## API-Überblick (implementiert)
+## API-Überblick
 
-Basis-Pfad: `/v1`. Alle Ressourcen sind tenant-gescoped.
+Basis-Pfad: `/v1`. Alle Ressourcen sind tenant-gescoped (`X-Tenant-Id` im Modus `none`).
 
 | Methode | Pfad | Beschreibung |
 |---------|------|--------------|
 | `GET` | `/healthz` | Status + Auth-Modus |
+| `GET` | `/metrics` | Prometheus-Scrape-Endpoint |
 | `POST` | `/v1/sessions` | Session anlegen (inkl. initialer Static-Region) |
-| `GET` | `/v1/sessions/{sid}` | Session-Metadaten + Budget-Status |
-| `POST` | `/v1/sessions/{sid}/segments` | Working-Segmente anhängen (Idempotency-Key **Pflicht**) |
+| `GET` | `/v1/sessions/{sid}` | Session-Metadaten + Budget-/Watermark-Status |
+| `POST` | `/v1/sessions/{sid}/segments` | Working-Segmente anhängen (single + batch) |
 | `POST` | `/v1/sessions/{sid}/blobs` | Blob hochladen (Content-Addressed, SHA-256) |
-| `POST` | `/v1/sessions/{sid}/render` | Context rendern → Provider-Request-Fragment |
+| `POST` | `/v1/sessions/{sid}/render` | Context rendern → Provider-Request-Fragment (`scope=path\|frame`) |
 | `PUT` | `/v1/sessions/{sid}/static-segments` | Static-Region ersetzen (Epoch-Bump) |
+| `POST` | `/v1/sessions/{sid}/gc` | GC triggern (`minor` \| `major`) → `202 { job_id }` |
+| `GET` | `/v1/sessions/{sid}/refs/{segment_id}` | Page-Fault: externalisierte Unit lazy expandieren |
+| `POST`/`DELETE` | `/v1/sessions/{sid}/segments/{segid}/pin` | Segment pinnen / entpinnen |
+| `POST`/`DELETE` | `/v1/sessions/{sid}/frames[/{fid}]` | Frame push / pop (LIFO) |
+| `GET` | `/v1/sessions/{sid}/events?after_seq=…` | Event-Outbox (Pull + SSE) |
+| `POST` | `/v1/sessions/{sid}/archive` | Session archivieren (terminale Promotion → `archived`) |
 
-### Beispiel: Session anlegen und rendern
+### Beispiel: Session anlegen, anhängen, rendern
 
 ```powershell
-# Session erstellen
-curl -X POST http://localhost:5000/v1/sessions `
-  -H "Content-Type: application/json" `
-  -H "X-Tenant-Id: my-tenant" `
-  -d '{"static_segments":[{"kind":"system_prompt","role":"system","content":"You are helpful."}]}'
+$h = @{ "X-Tenant-Id" = "my-tenant"; "Content-Type" = "application/json" }
+
+# Session erstellen (System-Prompt im Static-Bereich)
+$sid = (Invoke-RestMethod -Method Post -Uri http://localhost:5291/v1/sessions -Headers $h `
+  -Body '{"static_segments":[{"kind":"system_prompt","content":"You are helpful."}]}').session_id
 
 # User-Nachricht anhängen
-curl -X POST http://localhost:5000/v1/sessions/{session_id}/segments `
-  -H "Content-Type: application/json" `
-  -H "Idempotency-Key: append-001" `
-  -d '{"kind":"user_msg","role":"user","content":"Hello"}'
+Invoke-RestMethod -Method Post -Uri "http://localhost:5291/v1/sessions/$sid/segments" -Headers $h `
+  -Body '{"kind":"message","role":"user","content":"Hallo"}'
 
-# Render für Anthropic (Turn-Advance + Idempotency-Key)
-curl -X POST http://localhost:5000/v1/sessions/{session_id}/render `
-  -H "Content-Type: application/json" `
-  -H "Idempotency-Key: render-turn-001" `
-  -d '{"provider":"anthropic"}'
+# Render für Anthropic (Idempotency-Key bei turn_advance Pflicht)
+Invoke-RestMethod -Method Post -Uri "http://localhost:5291/v1/sessions/$sid/render" `
+  -Headers ($h + @{"Idempotency-Key"="render-001"}) `
+  -Body '{"provider":"anthropic","scope":"path","turn_advance":false}'
 ```
 
 Antwort von `render`:
@@ -192,11 +196,12 @@ Registrierte Provider: **`anthropic`**, **`openai`**. Unbekannte Provider → `4
 
 ## Authentifizierung
 
-Im Default-Modus `none` gibt es keine Authentifizierung. Jeder Request wird über den `X-Tenant-Id`-Header (oder `default_tenant`) einem Tenant zugeordnet. Beim Start loggt der Service eine Warnung — **nicht für Produktion ohne Gateway geeignet**.
+Drei Modi über `auth.mode`:
 
-Die Tenant-Pipeline ist von Anfang an vollständig verdrahtet; ein Upgrade auf `api_key` oder `jwt` ist eine reine Konfigurationsänderung ohne Datenmigration (Implementierung folgt in M5).
+- **`none`** (Default) — keine Authentifizierung; der Tenant kommt aus `X-Tenant-Id` (oder `default_tenant`). Beim Start loggt der Service eine Warnung — **nicht für Produktion ohne vorgelagertes Gateway**.
+- **`api_key`** / **`jwt`** — vollständig implementiert (WP7). Der Wechsel ist eine reine Konfigurationsänderung ohne Datenmigration, weil die Security-Pipeline (`TenantResolution → Authentication → Authorization`) von Anfang an verdrahtet ist.
 
-Autorisierung über den Erweiterungspunkt `ICtxmanAuthorizationHandler` — Default: alles innerhalb des Tenants erlaubt.
+Autorisierung über den Erweiterungspunkt `ICtxmanAuthorizationHandler` — Default `AllowAllWithinTenantAuthorizationHandler`: alles innerhalb des aufgelösten Tenants erlaubt.
 
 ---
 
@@ -221,13 +226,15 @@ Konventionen und Architektur-Notizen für Agents: [`CLAUDE.md`](CLAUDE.md).
 | [`docs/ctxman-spec.md`](docs/ctxman-spec.md) | Verbindliche Spec v0.2 — Domänenmodell, API, GC, Events |
 | [`CLAUDE.md`](CLAUDE.md) | Projekt-Konventionen, Teststrategie, Grenzen |
 
-Geplante Milestones (Spec §12):
+Milestones (Spec §12) — **alle abgeschlossen** (WP1–WP7):
 
-1. **M1 — Core Store** ← *aktuell (WP1–WP3 abgeschlossen)*
-2. **M2 — Minor GC:** Externalisierung, TTL-Eviction, `expand_context_ref`, Watermarks
-3. **M3 — Major GC:** Compaction-Worker, Promotion
-4. **M4 — Frames & SDKs:** Subagent-Frames, Python/C#-Clients
-5. **M5 — Härtung:** Auth-Modi, Azure-Blob, Metriken, Archivierung
+1. ✅ **M1 — Core Store:** Domänenmodell, Persistenz, Sessions/Segments/Blobs, Render
+2. ✅ **M2 — Minor GC:** Externalisierung, TTL-Eviction, `GET /refs`, Watermarks
+3. ✅ **M3 — Major GC:** Compaction-Worker, Promotion
+4. ✅ **M4 — Frames:** Subagent-Frames, Frame-Scope-Render, Archivierung
+5. ✅ **M5 — Härtung:** Auth-Modi, Azure-Blob, Metriken, Retention/Cold-Storage
+
+Offen jenseits v0.2: Client-SDKs (Python / C#).
 
 ---
 
