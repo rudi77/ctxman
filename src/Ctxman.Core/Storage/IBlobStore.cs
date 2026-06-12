@@ -20,4 +20,14 @@ public interface IBlobStore
 
     /// <summary>Prüft, ob für <paramref name="key"/> ein Inhalt existiert.</summary>
     ValueTask<bool> Exists(string tenantId, string key, CancellationToken ct);
+
+    /// <summary>
+    /// Enumeriert alle für den Tenant gespeicherten Blobs. Fehlende Tenant-Ablage ⇒ leere Sequenz.
+    /// </summary>
+    IAsyncEnumerable<BlobInfo> List(string tenantId, CancellationToken ct);
+
+    /// <summary>
+    /// Löscht den Blob mit <paramref name="key"/> idempotent (kein Fehler, wenn nicht vorhanden).
+    /// </summary>
+    ValueTask Delete(string tenantId, string key, CancellationToken ct);
 }

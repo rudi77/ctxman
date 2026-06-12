@@ -41,13 +41,65 @@ public sealed record PromotionConfig(
     PromotionSink Sink);
 
 /// <summary>
-/// Blob-Retention/Mark-and-Sweep-Konfiguration (Spec §7.1).
+/// Blob-Retention/Mark-and-Sweep-Konfiguration (Spec §7.1). <see cref="BlobGraceHours"/> und
+/// <see cref="SweepInterval"/> sind das Wire-/Config-Format; <see cref="BlobGrace"/> und
+/// <see cref="SweepIntervalSpan"/> liefern die vom Sweeper konsumierten <see cref="TimeSpan"/>-Werte.
 /// </summary>
 public sealed record RetentionConfig(
     int BlobGraceHours,
     int EvictedBlobRetentionDays,
     string ArchivedSessionBlobs,
-    string SweepInterval);
+    string SweepInterval)
+{
+    /// <summary>
+    /// Mindest-Alter vor Sweep als <see cref="TimeSpan"/> (Spec §7.1: <c>blob_grace_hours</c>).
+    /// </summary>
+    public TimeSpan BlobGrace => TimeSpan.FromHours(BlobGraceHours);
+
+    /// <summary>
+    /// Sweep-Intervall als <see cref="TimeSpan"/> (Spec §7.1: <c>sweep_interval</c>, z. B. "24h").
+    /// </summary>
+    public TimeSpan SweepIntervalSpan => ParseDuration(SweepInterval);
+
+    /// <summary>
+    /// Parst eine Dauer aus dem Config-Format: entweder mit Suffix (<c>h</c> Stunden,
+    /// <c>m</c> Minuten, <c>s</c> Sekunden, <c>d</c> Tage) wie "24h", oder eine reine Zahl,
+    /// die als Stunden interpretiert wird (Spec §7.1).
+    /// </summary>
+    public static TimeSpan ParseDuration(string value)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(value);
+        var trimmed = value.Trim();
+
+        var unit = trimmed[^1];
+        if (char.IsLetter(unit))
+        {
+            var number = trimmed[..^1];
+            if (!double.TryParse(number, System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture, out var magnitude))
+            {
+                throw new FormatException($"Ungültige Dauer '{value}'.");
+            }
+
+            return char.ToLowerInvariant(unit) switch
+            {
+                'h' => TimeSpan.FromHours(magnitude),
+                'm' => TimeSpan.FromMinutes(magnitude),
+                's' => TimeSpan.FromSeconds(magnitude),
+                'd' => TimeSpan.FromDays(magnitude),
+                _ => throw new FormatException($"Unbekannte Zeiteinheit '{unit}' in '{value}'."),
+            };
+        }
+
+        if (!double.TryParse(trimmed, System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture, out var hours))
+        {
+            throw new FormatException($"Ungültige Dauer '{value}'.");
+        }
+
+        return TimeSpan.FromHours(hours);
+    }
+}
 
 /// <summary>
 /// Effektive, deklarative Policy einer Session (Spec §5 + §7.1). Wird bei Session-Erstellung
