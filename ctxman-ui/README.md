@@ -8,11 +8,27 @@ React-Dashboard + Spielwiese für den ctxman Context-Management-Service.
 # 1. API starten (Postgres erforderlich, siehe Haupt-README)
 dotnet run --project src/Ctxman.Api          # läuft auf http://localhost:5291
 
-# 2. UI starten
+# 2. Mock-Backend starten (Compaction-LLM + Promotion-Sink, ohne echte Credentials)
 cd ctxman-ui
 npm install
+npm run mock                                 # http://localhost:5999
+
+# 3. UI starten
 npm run dev                                  # http://localhost:5173
 ```
+
+> **Mock-Backend:** Frame-Pop, Archivierung und Major GC rufen das Compaction-LLM und den
+> Promotion-Webhook auf (Spec §2.5/§3.3). Lokal ohne API-Key übernimmt `npm run mock` beide
+> Rollen. Die ctxman-API darauf zeigen lassen:
+>
+> ```powershell
+> $env:Compaction__Anthropic__BaseUrl = "http://localhost:5999"
+> $env:Compaction__Anthropic__ApiKey  = "mock-key"
+> dotnet run --project src/Ctxman.Api
+> ```
+>
+> Die UI legt Sessions per Default mit `promotion.sink.url = http://localhost:5999/memory/ingest`
+> an (Feld in Spielwiese/Simulation änderbar).
 
 Der Vite-Dev-Server proxied `/api/*` auf die ctxman-API (`http://localhost:5291`,
 überschreibbar via `VITE_API_TARGET` in einer `.env.local`). Dadurch gibt es im
@@ -39,9 +55,18 @@ Dev-Betrieb kein CORS-Problem — die API selbst setzt keine CORS-Header.
 - Segmente anhängen (Quick-Actions inkl. großer Tool-Units, die die Externalisierung
   triggern), Render (anthropic/openai, path/frame, turn_advance), GC manuell
   (minor/major), Frames push/pop, Static-Epoch-Bump mit If-Match.
-- **Turn-Simulator**: simuliert einen Agent-Loop (user_msg → render → Tool-Units →
-  render → assistant_msg, gelegentlich gepinnte decisions) — auf dem Dashboard live
-  zusehen, wie Watermarks reißen und der GC arbeitet.
+**Simulations-Labor** (Tab „Simulation"): vordefinierte Szenarien, jedes erstellt eine
+eigene Session mit passender Policy und erzählt seinen Ablauf im Log; das Dashboard
+zeigt parallel den Live-Effekt. Der Lauf überlebt Tab-Wechsel (Modul-Singleton).
+
+| Szenario | Zeigt |
+|---|---|
+| ⚡ Kurzer Q&A-Task | Baseline ohne GC-Aktivität |
+| 🏃 Marathon-Langläufer | Sägezahn, Minor/Major GC unter Dauerlast |
+| 🪆 Agent mit Subagents | Frames push/pop (auch verschachtelt, LIFO), subagent_return |
+| 🌪 Tool-Sturm & Page Faults | Externalisierung + expand_context_ref/410 |
+| 🔌 MCP-Toggle-Chaos | Epoch-Bumps zur Laufzeit, Diff, cache_prefix_hash-Stabilität |
+| 🚨 Budget-Crunch | Emergency-Watermark, 413-Retry-Pfad |
 
 ## Architektur-Notizen
 

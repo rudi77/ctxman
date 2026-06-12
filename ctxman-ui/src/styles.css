@@ -303,6 +303,38 @@ textarea { font-family: var(--mono); font-size: 12px; resize: vertical; }
 
 .sim-log { font-family: var(--mono); font-size: 11.5px; color: var(--text-dim); max-height: 160px; overflow-y: auto; }
 
+/* ---------- Simulations-Labor ---------- */
+.scenario-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
+  gap: 14px;
+  margin-bottom: 14px;
+}
+.scenario-card { display: flex; flex-direction: column; margin-bottom: 0; }
+.scenario-card.running { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.scenario-head { display: flex; gap: 12px; align-items: center; margin-bottom: 8px; }
+.scenario-emoji { font-size: 28px; }
+.scenario-name { font-weight: 700; font-size: 15px; }
+.scenario-tagline { font-size: 12px; color: var(--accent-2); }
+.scenario-desc { font-size: 12.5px; color: var(--text-dim); line-height: 1.5; margin: 4px 0 10px; }
+.scenario-watch { font-size: 12px; margin-bottom: 12px; }
+.scenario-watch ul { margin: 4px 0 0; padding-left: 18px; color: var(--text-dim); }
+.scenario-watch li { margin-bottom: 2px; }
+
+.sim-narration {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  max-height: 320px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.sim-line { display: flex; gap: 10px; padding: 2px 6px; border-radius: 4px; color: var(--text-dim); animation: eventIn 0.3s ease; }
+.sim-line .t { color: var(--text-faint); min-width: 64px; }
+.sim-line.phase { color: var(--accent-2); font-weight: 700; background: rgba(34, 211, 238, 0.06); margin-top: 4px; }
+.sim-line.warn { color: var(--soft); }
+
 .json-view {
   background: #0d1322; border-radius: 8px; padding: 10px; font-family: var(--mono);
   font-size: 11.5px; white-space: pre-wrap; word-break: break-word; max-height: 380px; overflow-y: auto;

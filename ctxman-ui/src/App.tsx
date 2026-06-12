@@ -6,8 +6,9 @@ import { useLiveSession } from "./state/useLiveSession";
 import { SessionSidebar } from "./components/SessionSidebar";
 import { Dashboard } from "./components/Dashboard";
 import { Playground } from "./components/Playground";
+import { SimulationLab } from "./components/SimulationLab";
 
-type Tab = "dashboard" | "playground";
+type Tab = "dashboard" | "playground" | "simulation";
 
 export default function App() {
   const { sessions, add, remove, update } = useKnownSessions();
@@ -102,6 +103,9 @@ export default function App() {
           <button className={tab === "playground" ? "active" : ""} onClick={() => setTab("playground")}>
             🎮 Spielwiese
           </button>
+          <button className={tab === "simulation" ? "active" : ""} onClick={() => setTab("simulation")}>
+            🧪 Simulation
+          </button>
         </div>
 
         {tab === "dashboard" &&
@@ -132,6 +136,18 @@ export default function App() {
               </button>
             </div>
           ))}
+
+        {tab === "simulation" && (
+          <SimulationLab
+            hooks={{
+              registerSession: (s) => {
+                add(s);
+                setSelectedId(s.id);
+              },
+            }}
+            onShowDashboard={() => setTab("dashboard")}
+          />
+        )}
 
         {tab === "playground" && (
           <Playground

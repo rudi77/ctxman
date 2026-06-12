@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useState } from "react";
 import { api } from "../api/client";
 import type { AppendSegmentInput, SessionDetail, StaticSegmentInput } from "../api/types";
 import type { LiveState } from "../state/eventReducer";
@@ -94,7 +94,6 @@ export function Playground(props: Props) {
               run={run}
               onKnownUpdate={props.onKnownUpdate}
             />
-            <SimulatorPanel sessionId={known.id} run={run} onPinned={props.onPinned} />
           </>
         )}
       </div>
@@ -137,6 +136,9 @@ function CreateSessionPanel({
   const [toolLines, setToolLines] = useState(
     "core | get_weather | Liefert das Wetter für einen Ort\ncore | search_web | Websuche\nmcp:github | list_issues | Listet GitHub-Issues",
   );
+  const [sinkUrl, setSinkUrl] = useState(
+    () => localStorage.getItem("ctxman-ui.sink") ?? "http://localhost:5999/memory/ingest",
+  );
   const [busy, setBusy] = useState(false);
 
   const create = async () => {
@@ -160,6 +162,8 @@ function CreateSessionPanel({
           budget_tokens: budget,
           watermarks: { soft, hard, emergency },
           externalize_threshold_tokens: threshold,
+          // Frame-Pop/Archive promoten an diese URL — lokal der Mock (npm run mock).
+          promotion: sinkUrl.trim() ? { sink: { type: "webhook", url: sinkUrl.trim() } } : undefined,
         },
         static_segments: staticSegments,
       });
@@ -209,6 +213,17 @@ function CreateSessionPanel({
       <div className="form-row" style={{ alignItems: "start" }}>
         <label>Tool-Defs<br /><span className="muted">source | name | desc</span></label>
         <textarea rows={4} value={toolLines} onChange={(e) => setToolLines(e.target.value)} />
+      </div>
+      <div className="form-row">
+        <label>Promotion-Sink</label>
+        <input
+          value={sinkUrl}
+          onChange={(e) => {
+            setSinkUrl(e.target.value);
+            localStorage.setItem("ctxman-ui.sink", e.target.value);
+          }}
+          title="Frame-Pop/Archive promoten Fakten an diese URL. Lokal: npm run mock (Port 5999)."
+        />
       </div>
       <div className="row" style={{ justifyContent: "flex-end" }}>
         <button className="primary" disabled={busy} onClick={() => void create()}>
@@ -457,94 +472,5 @@ function EpochBumpPanel({
   );
 }
 
-/* ---------- Turn-Simulator ---------- */
-
-function SimulatorPanel({
-  sessionId,
-  run,
-  onPinned,
-}: {
-  sessionId: string;
-  run: <T>(title: string, fn: () => Promise<T>) => Promise<T | null>;
-  onPinned: (id: string) => void;
-}) {
-  const [turns, setTurns] = useState(10);
-  const [running, setRunning] = useState(false);
-  const [logLines, setLogLines] = useState<string[]>([]);
-  const stopRef = useRef(false);
-
-  const logLine = (s: string) => setLogLines((prev) => [...prev.slice(-60), s]);
-
-  const simulate = async () => {
-    setRunning(true);
-    stopRef.current = false;
-    setLogLines([]);
-    for (let t = 1; t <= turns && !stopRef.current; t++) {
-      logLine(`— Turn ${t}/${turns} —`);
-
-      await run(`sim: user_msg`, () =>
-        api.appendSegments(sessionId, [
-          { kind: "user_msg", role: "user", content: loremTokens(50 + Math.floor(Math.random() * 120), `u${t}`) },
-        ]),
-      );
-      const r1 = await run("sim: render", () => api.render(sessionId, "anthropic", "path", true));
-      if (r1) logLine(`render → ${r1.tokens_total} tok, ${r1.watermark_state}`);
-
-      // 1–2 Tool-Units, gelegentlich groß genug für die Externalisierung (>2k Tokens).
-      const units = 1 + (Math.random() < 0.4 ? 1 : 0);
-      for (let u = 0; u < units && !stopRef.current; u++) {
-        const big = Math.random() < 0.45;
-        const tokens = big ? 2500 + Math.floor(Math.random() * 5000) : 150 + Math.floor(Math.random() * 500);
-        const callId = `call_${t}_${u}_${Math.random().toString(36).slice(2, 6)}`;
-        await run(`sim: tool unit ${big ? "(groß)" : ""}`, () =>
-          api.appendSegments(sessionId, [
-            { kind: "tool_call", role: "assistant", content: JSON.stringify({ tool: "search_web", id: callId }), tool_call_id: callId },
-            { kind: "tool_result", role: "tool", content: loremTokens(tokens, callId), tool_call_id: callId },
-          ]),
-        );
-        const r = await run("sim: render", () => api.render(sessionId, "anthropic", "path", true));
-        if (r) logLine(`render → ${r.tokens_total} tok, ${r.watermark_state}`);
-      }
-
-      await run("sim: assistant_msg", () =>
-        api.appendSegments(sessionId, [
-          { kind: "assistant_msg", role: "assistant", content: loremTokens(80 + Math.floor(Math.random() * 150), `a${t}`) },
-        ]),
-      );
-
-      if (t % 4 === 0) {
-        const res = await run("sim: decision (pinned)", () =>
-          api.appendSegments(sessionId, [
-            { kind: "decision", role: "assistant", content: `Entscheidung aus Turn ${t}: Option B gewählt.`, pinned: true },
-          ]),
-        );
-        if (res) onPinned(res.segment_ids[0]);
-      }
-
-      await new Promise((resolve) => setTimeout(resolve, 350));
-    }
-    logLine(stopRef.current ? "⏹ gestoppt" : "✅ fertig");
-    setRunning(false);
-  };
-
-  return (
-    <div className="panel">
-      <h3>Turn-Simulator <span className="hint">— simuliert einen Agent-Loop und füllt den Context</span></h3>
-      <div className="row" style={{ marginBottom: 8 }}>
-        <label className="muted">Turns:</label>
-        <input type="number" min={1} max={100} value={turns} style={{ width: 70 }} onChange={(e) => setTurns(Number(e.target.value))} />
-        {!running ? (
-          <button className="primary" onClick={() => void simulate()}>🎮 Simulation starten</button>
-        ) : (
-          <button className="danger" onClick={() => (stopRef.current = true)}>⏹ Stopp</button>
-        )}
-      </div>
-      <p className="muted">
-        Pro Turn: user_msg → render → 1–2 Tool-Units (teils &gt;2k Tokens) → render → assistant_msg; alle 4 Turns
-        eine gepinnte decision. Auf dem Dashboard zusehen, wie Watermarks überschritten werden und der GC
-        externalisiert &amp; evicted.
-      </p>
-      {logLines.length > 0 && <div className="sim-log">{logLines.map((l, i) => <div key={i}>{l}</div>)}</div>}
-    </div>
-  );
-}
+// Der frühere einfache Turn-Simulator ist ins Simulations-Labor (Tab „Simulation")
+// umgezogen — dort gibt es Szenarien für Subagents, Marathon, Tool-Sturm usw.

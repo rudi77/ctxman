@@ -35,6 +35,9 @@ export interface PolicyOverrides {
   externalize_threshold_tokens?: number;
   tokenizer?: string;
   on_tool_removed?: "keep" | "externalize" | "evict";
+  // Frame-Pop/Archive führen die Promotion aus (Spec §2.5/§3.3) — lokal auf den
+  // Mock-Sink zeigen (ctxman-ui/dev/mock-backend.mjs), sonst schlägt der Webhook fehl.
+  promotion?: { sink?: { type?: string; url?: string } };
 }
 
 export interface CreateSessionRequest {
