@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using System.Text.Json;
 using Ctxman.Core;
 using Ctxman.Core.Domain;
@@ -13,9 +12,10 @@ namespace Ctxman.Api.Gc;
 /// Hintergrund-Worker für GC-Jobs (Spec §3.2 / §8). Liest <see cref="MinorGcJob"/>s aus dem
 /// <see cref="ChannelGcJobQueue"/> und arbeitet sie außerhalb des Request-Pfads ab.
 ///
-/// Per-Session-Serialisierung (Spec §8 <c>pg_advisory_lock(session_id)</c>): ein
-/// <see cref="SemaphoreSlim"/>-Map serialisiert konkurrierende Jobs derselben Session. Der echte
-/// Advisory-Lock über Postgres folgt in WP7; das Semaphor ist das SQLite-Test-Äquivalent.
+/// Per-Session-Serialisierung (Spec §8 <c>pg_advisory_lock(session_id)</c>): Minor und Major
+/// teilen sich denselben <see cref="SessionGcLocks"/>-Singleton, damit niemals zwei parallele
+/// Collections (gleich welcher Granularität) auf derselben Session laufen. Der echte Advisory-
+/// Lock über Postgres folgt in WP7; das Semaphor ist das SQLite-Test-Äquivalent.
 ///
 /// Tenant-Scope: der Worker läuft OHNE HTTP-Request, also ohne von der Middleware gesetzten
 /// <see cref="ITenantContext"/>. Pro Job wird ein eigener DI-Scope gebaut und der
@@ -26,10 +26,9 @@ public sealed class MinorGcWorker : BackgroundService
 {
     private readonly ChannelGcJobQueue _queue;
     private readonly IServiceScopeFactory _scopeFactory;
+    private readonly SessionGcLocks _sessionLocks;
+    private readonly MajorCollection _majorCollection;
     private readonly ILogger<MinorGcWorker> _logger;
-
-    // Spec §8: pro Session ein Semaphor (SQLite-Äquivalent zu pg_advisory_lock(session_id)).
-    private readonly ConcurrentDictionary<Ulid, SemaphoreSlim> _sessionLocks = new();
 
     // Spec §6: Event-Payload ist kanonisches snake_case-JSON (gleiche Optionen wie die Endpunkte).
     private static readonly JsonSerializerOptions EventPayloadOptions = new()
@@ -40,10 +39,14 @@ public sealed class MinorGcWorker : BackgroundService
     public MinorGcWorker(
         ChannelGcJobQueue queue,
         IServiceScopeFactory scopeFactory,
+        SessionGcLocks sessionLocks,
+        MajorCollection majorCollection,
         ILogger<MinorGcWorker> logger)
     {
         _queue = queue;
         _scopeFactory = scopeFactory;
+        _sessionLocks = sessionLocks;
+        _majorCollection = majorCollection;
         _logger = logger;
     }
 
@@ -75,19 +78,20 @@ public sealed class MinorGcWorker : BackgroundService
 
     private async Task ProcessJobAsync(MinorGcJob job, CancellationToken ct)
     {
-        // Spec §3.3: Major (Compaction/Promotion) ist WP5 — hier nur Marker entgegennehmen, nicht ausführen.
-        if (job.Level == GcLevel.Major)
-        {
-            _logger.LogDebug("Major GC job {JobId} for session {SessionId} dequeued (no-op; execution is WP5).",
-                job.JobId, job.SessionId);
-            return;
-        }
-
-        var sessionLock = _sessionLocks.GetOrAdd(job.SessionId, _ => new SemaphoreSlim(1, 1));
+        // Spec §8: Minor und Major teilen denselben Per-Session-Lock — niemals zwei parallele
+        // Collections auf derselben Session (pg_advisory_lock(session_id)-Äquivalent).
+        var sessionLock = _sessionLocks.GetLock(job.SessionId);
         await sessionLock.WaitAsync(ct);
         try
         {
-            await RunMinorAsync(job, ct);
+            if (job.Level == GcLevel.Major)
+            {
+                await _majorCollection.ExecuteAsync(job.TenantId, job.SessionId, ct);
+            }
+            else
+            {
+                await RunMinorAsync(job, ct);
+            }
         }
         finally
         {

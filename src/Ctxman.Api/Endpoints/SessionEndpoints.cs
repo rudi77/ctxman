@@ -180,6 +180,22 @@ public static class SessionEndpoints
             Hard: overrides?.Watermarks?.Hard ?? defaults.Watermarks.Hard,
             Emergency: overrides?.Watermarks?.Emergency ?? defaults.Watermarks.Emergency);
 
+        // Spec §5: compaction overrides — missing fields fall back to defaults.
+        var compactionModel = overrides?.Compaction?.Model ?? defaults.Compaction.Model;
+        var compactionTemplateId = overrides?.Compaction?.PromptTemplateId ?? defaults.Compaction.PromptTemplateId;
+        var compactionMaxShare = overrides?.Compaction?.MaxShare ?? defaults.Compaction.MaxShare;
+        var compaction = new CompactionConfig(compactionModel, compactionTemplateId, compactionMaxShare);
+
+        // Spec §5: promotion/sink overrides — missing fields fall back to defaults.
+        // When the caller explicitly supplies a sink block, the url must come from that override
+        // (not from the default) so that a missing url is caught by validation (AC14).
+        var overrideSink = overrides?.Promotion?.Sink;
+        var sinkType = overrideSink?.Type ?? defaults.Promotion.Sink.Type;
+        var sinkUrl = overrideSink is not null
+            ? overrideSink.Url                         // null when caller omitted url → validation fails below
+            : defaults.Promotion.Sink.Url;             // no sink override → keep default, skip validation
+        var promotion = new PromotionConfig(new PromotionSink(sinkType, sinkUrl));
+
         policy = defaults with
         {
             BudgetTokens = budget,
@@ -187,6 +203,8 @@ public static class SessionEndpoints
             Tokenizer = tokenizer,
             Watermarks = watermarks,
             OnToolRemoved = onToolRemoved,
+            Compaction = compaction,
+            Promotion = promotion,
         };
 
         // Spec §5/§3.1: Budget positiv; Watermarks Anteile in (0,1]; soft ≤ hard ≤ emergency.
@@ -225,6 +243,55 @@ public static class SessionEndpoints
         {
             error = "on_tool_removed must be one of: keep, externalize, evict.";
             return false;
+        }
+
+        // Spec §5: compaction validation.
+        if (string.IsNullOrWhiteSpace(compactionModel))
+        {
+            error = "compaction.model must not be empty.";
+            return false;
+        }
+
+        if (string.IsNullOrWhiteSpace(compactionTemplateId))
+        {
+            error = "compaction.prompt_template_id must not be empty.";
+            return false;
+        }
+
+        if (compactionMaxShare <= 0.0 || compactionMaxShare > 1.0)
+        {
+            error = "compaction.max_share must be in the range (0, 1].";
+            return false;
+        }
+
+        // Spec §5: promotion sink validation.
+        if (string.IsNullOrWhiteSpace(sinkType))
+        {
+            error = "promotion.sink.type must not be empty.";
+            return false;
+        }
+
+        if (sinkType is not "webhook")
+        {
+            error = "promotion.sink.type must be one of: webhook.";
+            return false;
+        }
+
+        // Spec §5 / AC14: only validate the webhook url when the caller explicitly supplied a
+        // sink override; the default placeholder url is intentionally not re-validated here.
+        if (sinkType == "webhook" && overrideSink is not null)
+        {
+            if (string.IsNullOrWhiteSpace(sinkUrl))
+            {
+                error = "promotion.sink.url is required when promotion.sink.type is 'webhook'.";
+                return false;
+            }
+
+            if (!Uri.TryCreate(sinkUrl, UriKind.Absolute, out _))
+            {
+                error = "promotion.sink.url must be a well-formed absolute URI.";
+                return false;
+            }
         }
 
         error = string.Empty;

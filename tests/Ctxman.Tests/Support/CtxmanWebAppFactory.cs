@@ -2,7 +2,9 @@ using System.Collections.Generic;
 using Ctxman.Api.Auth;
 using Ctxman.Core;
 using Ctxman.Core.Auth;
+using Ctxman.Core.Compaction;
 using Ctxman.Core.Persistence;
+using Ctxman.Core.Promotion;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
@@ -113,6 +115,20 @@ public sealed class CtxmanWebAppFactory : WebApplicationFactory<Program>
             RemoveDbContextRegistrations(services);
 
             services.AddDbContext<CtxmanDbContext>(o => o.UseSqlite(_connection));
+
+            // AC2 / AC7: Produktions-ICompactionModel und -IPromotionSink durch Fakes ersetzen,
+            // damit kein Test jemals echte Netzwerk-/LLM-Calls macht. Beide werden als Singleton
+            // registriert, sodass Tests über factory.Services.GetRequiredService<T>() dieselbe
+            // Instanz abfragen können, die der Worker verwendet hat.
+            services.RemoveAll<ICompactionModel>();
+            var fakeCompaction = new FakeCompactionModel();
+            services.AddSingleton(fakeCompaction);
+            services.AddSingleton<ICompactionModel>(fakeCompaction);
+
+            services.RemoveAll<IPromotionSink>();
+            var fakeSink = new RecordingPromotionSink();
+            services.AddSingleton(fakeSink);
+            services.AddSingleton<IPromotionSink>(fakeSink);
 
             // AuthOptions-Overrides aus den Test-Settings als PostConfigure anwenden. In minimal
             // hosting erfasst Program.Configure<AuthOptions> die Sektion gegen den
