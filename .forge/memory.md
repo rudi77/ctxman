@@ -32,7 +32,7 @@ Stateful .NET-9-Service für LLM-Context-Verwaltung (Stack/Heap/GC-Metapher). ct
   `Idempotency-Key` (Pflicht bei `turn_advance=true` auf render).
 - Spec-Invarianten in Code: Kommentare `// Spec §x.y` bei nicht-offensichtlichen Stellen.
 
-## Bereits implementiert (WP1–WP4)
+## Bereits implementiert (WP1–WP5)
 
 **Sessions** (`SessionEndpoints`):
 - `POST /v1/sessions`, `GET /v1/sessions/{sid}`
@@ -56,7 +56,7 @@ Stateful .NET-9-Service für LLM-Context-Verwaltung (Stack/Heap/GC-Metapher). ct
 - **Minor GC** (TTL-Eviction/Externalisierung im Hot Path): `MinorCollector`, `MinorGcWorker`
   (BackgroundService), `MinorGcJob`, `UnitGrouping`, `IGcJobQueue`/`ChannelGcJobQueue`,
   `GcLevel` (`minor` | `major`). `POST /v1/sessions/{sid}/gc` (`GcEndpoints`) enqueued einen
-  Lauf — `major`-Ausführung selbst kommt erst mit WP5, die Queue/Watermark-Verdrahtung steht.
+  Lauf. **Major-Ausführung selbst kam mit WP5** (s. u.); WP4 lieferte die Queue/Watermark-Verdrahtung.
 - **Watermarks**: `WatermarkState`/`PolicyConfig`-Erweiterung; in Render- und Session-Response
   exponiert.
 - **Page-Fault / Refs**: `GET /v1/sessions/{sid}/refs/{segment_id}` (`RefEndpoints`,
@@ -66,6 +66,27 @@ Stateful .NET-9-Service für LLM-Context-Verwaltung (Stack/Heap/GC-Metapher). ct
 - **Blob-Mark-and-Sweep**: `BlobSweeper` + `BlobSweepWorker`; `IBlobStore`/`FileSystemBlobStore`
   um Enumerate/`BlobInfo` erweitert.
 
+**Major GC (WP5, PR #4 gemerged)** — `src/Ctxman.{Core,Api}/Gc/`, `Compaction/`, `Promotion/`:
+- **Ein** `GcWorker` (Klasse heißt weiter `MinorGcWorker`) dispatcht `GcLevel.Major` →
+  `MajorCollection.ExecuteAsync`. Minor + Major teilen den **gemeinsamen** `SessionGcLocks`-
+  Singleton (pg_advisory_lock-Äquivalent) — nie zwei parallele Collections auf einer Session.
+- **Ablauf** (Spec §3.3): Promotion **vor** Compaction. Step 1 schreibt extrahierte Fakten
+  write-only an `IPromotionSink` (`WebhookPromotionSink`), emittiert `fact_promoted`. Step 2
+  fasst das `compaction.max_share`-Fenster der non-pinned Working-**Units** (oldest→youngest,
+  via `MajorCollector.PlanCompaction`, I/O-frei) zu **einem** `compaction_summary`-Segment auf
+  der `seq` des ältesten Quellsegments zusammen; Quellen → `compacted`. Events
+  `compaction_started`/`compaction_completed{source_ids,summary_id,tokens_before,tokens_after}`.
+- **`ICompactionModel`** (Core) + Adapter `AnthropicCompactionModel`/`AzureOpenAiCompactionModel`
+  (Api). Credentials nur via `IOptions<CompactionOptions>` (N5). LLM-Call **außerhalb** der
+  Transaktion. Tests gegen `FakeCompactionModel`/`RecordingPromotionSink` — kein Netzwerk.
+- **Version-Isolation**: Fenster-IDs zu Planungsbeginn eingefroren; nebenläufig angehängte
+  Segmente bleiben unberührt. `compaction{model,prompt_template_id,max_share}` + `promotion{sink}`
+  in `PolicyOverridesDto` override-/validierbar (`TryBuildPolicy`).
+- **Bekannte Vereinfachungen** (kein Blocker, ggf. Folge-Subtask): nur **ein** kombiniertes
+  `fact_promoted` pro Lauf (segment_id = ältestes Quellsegment), nicht pro Fakt; **zwei**
+  LLM-Calls pro Major-Lauf (Fact-Extraction + Compaction); `DbUpdateConcurrencyException`-Guard
+  ist bis zum Optimistic-Concurrency-Token (WP7) toter Defense-in-depth-Code.
+
 **Cross-cutting**:
 - `ITokenCounter` → `HeuristicTokenCounter` (Singleton)
 - `ICtxmanAuthorizationHandler` → `AllowAllWithinTenantAuthorizationHandler`
@@ -73,9 +94,8 @@ Stateful .NET-9-Service für LLM-Context-Verwaltung (Stack/Heap/GC-Metapher). ct
 
 ## Noch offen (nicht vorgezogen implementieren)
 
-- **WP5** — Major GC: Compaction, Promotion, vollständige Policy (M3). Spec §3.3/§5/§6/§8,
-  `ICompactionModel`, Advisory-Lock pro Session. Baut auf der Major-Queue/Watermark aus WP4 auf.
 - **WP6** — Frames: frames-Stack, Frame-Scope-Render, Archivierung (M4). Spec §2.1/§2.5/§3.3/§4.3/§6.
+  Baut auf Promotion aus WP5 auf (terminale Promotion bei Frame-Pop / `archive`).
 - **WP7** — Härtung: Auth (`api_key`/`jwt`), Autorisierung, Azure-Blob, Prometheus-Metriken,
   Retention/Cold-Storage (M5). Spec §4.1/§6/§7/§7.1/§8/§10.
 - Siehe jeweils `docs/forge-work/wp5-prompt.md` ff. und `wpN-acceptance.md`.
@@ -103,7 +123,8 @@ Stateful .NET-9-Service für LLM-Context-Verwaltung (Stack/Heap/GC-Metapher). ct
 | EF + Tenant-Filter | `Ctxman.Core/Persistence/CtxmanDbContext.cs` |
 | Idempotency | `src/Ctxman.Api/Idempotency/IdempotencyService.cs` |
 | Render-Pipeline | `src/Ctxman.Core/Rendering/*.cs` |
-| GC (Minor/Major, Queue, Worker) | `src/Ctxman.Core/Gc/*.cs`, `src/Ctxman.Api/Gc/*.cs` |
+| GC (Minor/Major, Queue, Worker, Locks) | `src/Ctxman.Core/Gc/*.cs`, `src/Ctxman.Api/Gc/*.cs` |
+| Compaction-LLM / Promotion-Sink | `src/Ctxman.{Core,Api}/Compaction/*.cs`, `.../Promotion/*.cs` |
 | Refs/Events/GC-Endpoints | `RefEndpoints.cs`, `EventEndpoints.cs`, `GcEndpoints.cs` |
 | Blob-Sweep | `src/Ctxman.Api/Gc/BlobSweeper.cs` + `BlobSweepWorker.cs` |
 | API-Endpoint-Muster | bestehende `*Endpoints.cs` im gleichen Stil erweitern |
