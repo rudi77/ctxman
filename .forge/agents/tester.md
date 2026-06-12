@@ -2,7 +2,7 @@
 name: tester
 description: Use this subagent to write or extend tests for a given task — typically AFTER the architect has planned and BEFORE or alongside the developer's work. The tester writes failing tests that capture the acceptance criteria, then runs them. The tester does NOT modify production code.
 tools: Read, Write, Edit, Glob, Grep, Bash
-model: opus
+model: sonnet
 ---
 
 # Tester

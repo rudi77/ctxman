@@ -32,7 +32,7 @@ Stateful .NET-9-Service für LLM-Context-Verwaltung (Stack/Heap/GC-Metapher). ct
   `Idempotency-Key` (Pflicht bei `turn_advance=true` auf render).
 - Spec-Invarianten in Code: Kommentare `// Spec §x.y` bei nicht-offensichtlichen Stellen.
 
-## Bereits implementiert (WP1–WP3)
+## Bereits implementiert (WP1–WP4)
 
 **Sessions** (`SessionEndpoints`):
 - `POST /v1/sessions`, `GET /v1/sessions/{sid}`
@@ -52,6 +52,20 @@ Stateful .NET-9-Service für LLM-Context-Verwaltung (Stack/Heap/GC-Metapher). ct
 - Golden-Determinismus: `tests/Ctxman.Tests/Golden/render-anthropic.json`,
   `render-openai.json` + `RenderGoldenTests`
 
+**GC / Lifecycle (WP4, PR #3 gemerged)** — `src/Ctxman.Api/Gc/`, `src/Ctxman.Core/Gc/`:
+- **Minor GC** (TTL-Eviction/Externalisierung im Hot Path): `MinorCollector`, `MinorGcWorker`
+  (BackgroundService), `MinorGcJob`, `UnitGrouping`, `IGcJobQueue`/`ChannelGcJobQueue`,
+  `GcLevel` (`minor` | `major`). `POST /v1/sessions/{sid}/gc` (`GcEndpoints`) enqueued einen
+  Lauf — `major`-Ausführung selbst kommt erst mit WP5, die Queue/Watermark-Verdrahtung steht.
+- **Watermarks**: `WatermarkState`/`PolicyConfig`-Erweiterung; in Render- und Session-Response
+  exponiert.
+- **Page-Fault / Refs**: `GET /v1/sessions/{sid}/refs/{segment_id}` (`RefEndpoints`,
+  `RefDtos`, `BlobRef`) expandiert externalisierte Units zurück.
+- **Pin/Unpin**: `POST`/`DELETE /v1/sessions/{sid}/segments/{segid}/pin` (`SegmentEndpoints`).
+- **Events/SSE**: `GET /v1/sessions/{sid}/events` (`EventEndpoints`, `text/event-stream`).
+- **Blob-Mark-and-Sweep**: `BlobSweeper` + `BlobSweepWorker`; `IBlobStore`/`FileSystemBlobStore`
+  um Enumerate/`BlobInfo` erweitert.
+
 **Cross-cutting**:
 - `ITokenCounter` → `HeuristicTokenCounter` (Singleton)
 - `ICtxmanAuthorizationHandler` → `AllowAllWithinTenantAuthorizationHandler`
@@ -59,8 +73,12 @@ Stateful .NET-9-Service für LLM-Context-Verwaltung (Stack/Heap/GC-Metapher). ct
 
 ## Noch offen (nicht vorgezogen implementieren)
 
-- **WP4+**: Minor-GC-Worker, Watermarks, Page-Fault (`GET /refs/...`), Pin/Unpin, Events/SSE,
-  Blob-Mark-and-Sweep, Major Collection — siehe `docs/forge-work/wp4-prompt.md` ff.
+- **WP5** — Major GC: Compaction, Promotion, vollständige Policy (M3). Spec §3.3/§5/§6/§8,
+  `ICompactionModel`, Advisory-Lock pro Session. Baut auf der Major-Queue/Watermark aus WP4 auf.
+- **WP6** — Frames: frames-Stack, Frame-Scope-Render, Archivierung (M4). Spec §2.1/§2.5/§3.3/§4.3/§6.
+- **WP7** — Härtung: Auth (`api_key`/`jwt`), Autorisierung, Azure-Blob, Prometheus-Metriken,
+  Retention/Cold-Storage (M5). Spec §4.1/§6/§7/§7.1/§8/§10.
+- Siehe jeweils `docs/forge-work/wp5-prompt.md` ff. und `wpN-acceptance.md`.
 
 ## Test-Patterns
 
@@ -85,6 +103,9 @@ Stateful .NET-9-Service für LLM-Context-Verwaltung (Stack/Heap/GC-Metapher). ct
 | EF + Tenant-Filter | `Ctxman.Core/Persistence/CtxmanDbContext.cs` |
 | Idempotency | `src/Ctxman.Api/Idempotency/IdempotencyService.cs` |
 | Render-Pipeline | `src/Ctxman.Core/Rendering/*.cs` |
+| GC (Minor/Major, Queue, Worker) | `src/Ctxman.Core/Gc/*.cs`, `src/Ctxman.Api/Gc/*.cs` |
+| Refs/Events/GC-Endpoints | `RefEndpoints.cs`, `EventEndpoints.cs`, `GcEndpoints.cs` |
+| Blob-Sweep | `src/Ctxman.Api/Gc/BlobSweeper.cs` + `BlobSweepWorker.cs` |
 | API-Endpoint-Muster | bestehende `*Endpoints.cs` im gleichen Stil erweitern |
 
 ## Effizienz-Hinweis für Agents

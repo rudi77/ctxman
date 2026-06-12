@@ -2,7 +2,7 @@
 name: developer
 description: Use this subagent to implement exactly ONE subtask from a plan produced by the architect subagent. The developer reads the plan, locates the relevant subtask, implements it, runs the verification (tests/lint), and stops. If the subtask cannot be implemented as planned (e.g. the plan turns out wrong), the developer reports back rather than improvising — let the architect re-plan.
 tools: Read, Edit, Write, Glob, Grep, Bash
-model: opus
+model: sonnet
 ---
 
 # Developer
