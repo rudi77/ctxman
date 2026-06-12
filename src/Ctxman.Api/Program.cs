@@ -111,6 +111,17 @@ else
     builder.Services.AddSingleton<IBlobStore, FileSystemBlobStore>();
 }
 
+// Spec §7.1: Cold-Storage-Exporter (best-effort beim Archivieren, wenn archived_session_blobs == "cold_storage").
+builder.Services.Configure<ColdStorageOptions>(builder.Configuration.GetSection(ColdStorageOptions.SectionName));
+builder.Services.PostConfigure<ColdStorageOptions>(o =>
+{
+    if (string.IsNullOrWhiteSpace(o.Root))
+    {
+        o.Root = Path.Combine(Path.GetTempPath(), "ctxman-cold");
+    }
+});
+builder.Services.AddSingleton<IColdStorageExporter, ColdStorageExporter>();
+
 // Spec §8: Minor-GC läuft asynchron außerhalb des Request-Pfads — Channel-Queue (Singleton) +
 // Hosted-Service-Worker. Der Worker serialisiert pro session_id und setzt den Tenant-Scope selbst.
 builder.Services.AddSingleton<ChannelGcJobQueue>();
