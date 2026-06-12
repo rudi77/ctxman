@@ -2,6 +2,7 @@ using System.Text;
 using System.Text.Json;
 using Ctxman.Api.Gc;
 using Ctxman.Api.Idempotency;
+using Ctxman.Api.Observability;
 using Ctxman.Core;
 using Ctxman.Core.Auth;
 using Ctxman.Core.Domain;
@@ -42,8 +43,10 @@ public static class RenderEndpoints
         ProviderAdapterRegistry adapters,
         IdempotencyService idempotency,
         IGcJobQueue gcJobs,
+        CtxmanMetrics metrics,
         CancellationToken ct)
     {
+        var sw = System.Diagnostics.Stopwatch.StartNew(); // Spec §6
         var turnAdvance = request.TurnAdvance ?? true;
 
         string? idempotencyKey = null;
@@ -171,6 +174,12 @@ public static class RenderEndpoints
                 {
                     segment_id = evicted.Id.ToString(),
                 }, nextEventSeq++, now));
+
+                // Spec §6: best-effort indicator — eviction of a page-fault expansion segment.
+                if (evicted.Kind == "ref_expansion")
+                {
+                    metrics.RecordEvictionAfterExpansion();
+                }
             }
 
             // Spec §3.2.3 / §6: ein unit_evicted je Unit (gekoppelte Unit ⇒ ein Event über beide Segmente).
@@ -265,6 +274,9 @@ public static class RenderEndpoints
             gcJobs.Enqueue(new MinorGcJob(tenant.TenantId, session.Id, Ulid.NewUlid(), gcLevel));
         }
 
+        // Spec §6: observe render latency, tokens, and watermark state.
+        metrics.ObserveRender(sw.Elapsed.TotalSeconds, reportedTokensTotal, plan.WatermarkState);
+
         return Results.Ok(response);
     }
 
@@ -277,6 +289,7 @@ public static class RenderEndpoints
         ITokenCounter tokenCounter,
         IBlobStore blobStore,
         IdempotencyService idempotency,
+        CtxmanMetrics metrics,
         CancellationToken ct)
     {
         if (!httpRequest.Headers.TryGetValue("Idempotency-Key", out var idemHeader)
@@ -438,6 +451,9 @@ public static class RenderEndpoints
 
         await db.SaveChangesAsync(ct);
         await tx.CommitAsync(ct);
+
+        // Spec §6: record static epoch bump.
+        metrics.RecordEpochBump();
 
         return Results.Ok(response);
     }

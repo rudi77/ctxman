@@ -3,9 +3,11 @@ using Ctxman.Api.Compaction;
 using Ctxman.Api.Endpoints;
 using Ctxman.Api.Gc;
 using Ctxman.Api.Idempotency;
+using Ctxman.Api.Observability;
 using Ctxman.Api.Promotion;
 using Ctxman.Api.Storage;
 using Ctxman.Core;
+using Prometheus;
 using Ctxman.Core.Auth;
 using Ctxman.Core.Compaction;
 using Ctxman.Core.Domain;
@@ -181,11 +183,17 @@ builder.Services.AddSingleton(sp =>
 builder.Services.AddSingleton<BlobSweeper>();
 builder.Services.AddHostedService<BlobSweepWorker>();
 
+// Spec §6: Prometheus metrics singleton — collectors register at construction time.
+builder.Services.AddSingleton<CtxmanMetrics>();
+
 // Wire-Format ist snake_case (CLAUDE.md): HealthzResponse.AuthMode -> "auth_mode".
 builder.Services.ConfigureHttpJsonOptions(o =>
     o.SerializerOptions.PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.SnakeCaseLower);
 
 var app = builder.Build();
+
+// Spec §6: force-resolve CtxmanMetrics so all series appear in /metrics at 0 from startup.
+_ = app.Services.GetRequiredService<CtxmanMetrics>();
 
 // Spec §4.1: Modus `none` hat keine Authentifizierung — beim Start klar warnen.
 var authOptions = app.Services.GetRequiredService<IOptions<AuthOptions>>().Value;
@@ -242,6 +250,9 @@ app.MapEventEndpoints();
 
 // Spec §2.5 / §4.3: Frame-Endpunkte (POST /v1/sessions/{sid}/frames — push).
 app.MapFrameEndpoints();
+
+// Spec §6: Prometheus scrape endpoint — no ResourceAction metadata, auth middleware skips it.
+app.MapMetrics();
 
 app.Run();
 
