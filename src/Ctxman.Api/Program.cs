@@ -40,6 +40,11 @@ builder.Services.AddSingleton<ICtxmanAuthorizationHandler, AllowAllWithinTenantA
 // Spec §4.4: Replay-/Store-Logik für den Idempotency-Key, geteilt von den mutierenden Endpunkten.
 builder.Services.AddScoped<IdempotencyService>();
 
+// Spec §3.3: PromotionService extrahiert Fakten via ICompactionModel und schreibt an IPromotionSink.
+// Scoped (nicht Singleton): nutzt Singleton ICompactionModel + IPromotionSink — kein Captive-Dependency.
+// Gibt PendingPromotionEvent-Liste zurück (ohne seq); Caller setzt seq im eigenen Transaction-Scope.
+builder.Services.AddScoped<PromotionService>();
+
 // Spec §8: konservativer Default-Token-Zähler (stateless ⇒ Singleton). Provider-genaue Zähler
 // sind eigene Registrierungen.
 builder.Services.AddSingleton<ITokenCounter, HeuristicTokenCounter>();
@@ -154,6 +159,9 @@ app.MapRefEndpoints();
 
 // Spec §4.3 / §6: Event-Outbox (GET /v1/sessions/{sid}/events?after_seq=… — Pull + SSE).
 app.MapEventEndpoints();
+
+// Spec §2.5 / §4.3: Frame-Endpunkte (POST /v1/sessions/{sid}/frames — push).
+app.MapFrameEndpoints();
 
 app.Run();
 

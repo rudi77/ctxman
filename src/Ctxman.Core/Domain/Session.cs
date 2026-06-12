@@ -115,4 +115,15 @@ public sealed class Session
         StaticEpoch += 1; // Spec §4.2
         UpdatedAt = now;
     }
+
+    /// <summary>
+    /// Setzt den Status auf <see cref="SessionStatus.Archived"/> und aktualisiert
+    /// <see cref="UpdatedAt"/> (Spec §4.3). Idempotent: bereits archivierte Sessions
+    /// ändern nur den Timestamp nicht erneut.
+    /// </summary>
+    public void Archive(DateTimeOffset now)
+    {
+        Status = SessionStatus.Archived; // Spec §4.3
+        UpdatedAt = now;
+    }
 }
