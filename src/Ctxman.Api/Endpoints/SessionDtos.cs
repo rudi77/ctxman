@@ -75,3 +75,11 @@ internal sealed record SessionDetailResponse(
     string WatermarkState,
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt);
+
+/// <summary>
+/// Antwort von <c>GET /v1/sessions</c>: alle Sessions des aufgelösten Tenants als Liste von
+/// Summaries (gleiche Form wie das Detail), neueste zuerst. Discovery-Snapshot für die UI —
+/// die Live-Push-Ergänzung ist der SSE-Stream <c>GET /v1/sessions/events</c>.
+/// </summary>
+internal sealed record SessionListResponse(
+    IReadOnlyList<SessionDetailResponse> Sessions);

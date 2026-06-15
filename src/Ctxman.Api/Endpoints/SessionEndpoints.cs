@@ -1,4 +1,7 @@
+using System.Text;
+using System.Text.Json;
 using Ctxman.Api.Idempotency;
+using Ctxman.Api.Notifications;
 using Ctxman.Api.Promotion;
 using Ctxman.Api.Storage;
 using Ctxman.Core;
@@ -19,10 +22,22 @@ namespace Ctxman.Api.Endpoints;
 /// </summary>
 public static class SessionEndpoints
 {
+    // Spec §6: SSE-Payloads sind kanonisches snake_case-JSON (wie die Outbox-Events).
+    private static readonly JsonSerializerOptions SseOptions = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
+    };
+
     public static IEndpointRouteBuilder MapSessionEndpoints(this IEndpointRouteBuilder app)
     {
         app.MapPost("/v1/sessions", CreateSessionAsync)
             .WithMetadata(new ResourceAction("session", null, "write")); // Spec §4.1
+        // Literale Pfade — höhere Routing-Präzedenz als /v1/sessions/{sid}, daher kein Konflikt
+        // (ein ULID ist nie "events"). Discovery-Snapshot bzw. Live-Stream über alle Sessions.
+        app.MapGet("/v1/sessions", ListSessionsAsync)
+            .WithMetadata(new ResourceAction("session", null, "read")); // Spec §4.1
+        app.MapGet("/v1/sessions/events", StreamSessionEventsAsync)
+            .WithMetadata(new ResourceAction("session", null, "read")); // Spec §4.1
         app.MapGet("/v1/sessions/{sid}", GetSessionAsync)
             .WithMetadata(new ResourceAction("session", null, "read")); // Spec §4.1
         app.MapPost("/v1/sessions/{sid}/archive", ArchiveSessionAsync)
@@ -37,6 +52,7 @@ public static class SessionEndpoints
         ITenantContext tenant,
         ITokenCounter tokenCounter,
         IdempotencyService idempotency,
+        SessionNotificationHub notifications,
         CancellationToken ct)
     {
         // Spec §4.4: auf POST /sessions ist der Idempotency-Key OPTIONAL. Ist er gesetzt, gilt die
@@ -120,7 +136,79 @@ public static class SessionEndpoints
 
         await db.SaveChangesAsync(ct);
 
+        // Live-Discovery: nach erfolgreichem Commit an verbundene SSE-Clients pushen. Ein
+        // Idempotency-Replay kehrt oben früh zurück und publiziert daher nicht erneut.
+        notifications.Publish(new SessionNotification(
+            "session_created", tenant.TenantId, session.Id.ToString(), now));
+
         return Results.Created($"/v1/sessions/{session.Id}", response);
+    }
+
+    /// <summary>
+    /// <c>GET /v1/sessions</c>: alle Sessions des aufgelösten Tenants (Discovery-Snapshot),
+    /// neueste zuerst, mit Budget-Status wie im Detail-Endpunkt. Der globale Query-Filter
+    /// (Spec §10) erzwingt die Tenant-Isolation; fremde Sessions erscheinen nie.
+    /// </summary>
+    private static async Task<IResult> ListSessionsAsync(
+        CtxmanDbContext db,
+        CancellationToken ct)
+    {
+        // Sortierung client-seitig: SQLite (Test-Provider) kann nicht nach DateTimeOffset in ORDER BY
+        // sortieren; bei der überschaubaren Session-Zahl pro Tenant ist In-Memory-Sort unkritisch.
+        var sessions = await db.Sessions
+            .AsNoTracking()
+            .ToListAsync(ct);
+        sessions = sessions.OrderByDescending(s => s.CreatedAt).ToList();
+
+        if (sessions.Count == 0)
+        {
+            return Results.Ok(new SessionListResponse(Array.Empty<SessionDetailResponse>()));
+        }
+
+        // tokens_used je Session in EINER gruppierten Query (kein N+1). render-eligible =
+        // live | externalized (I3), gespiegelt aus GetSessionAsync.
+        var ids = sessions.Select(s => s.Id).ToList();
+        var tokensBySession = await db.Segments
+            .AsNoTracking()
+            .Where(s => ids.Contains(s.SessionId)
+                && (s.State == SegmentState.Live || s.State == SegmentState.Externalized))
+            .GroupBy(s => s.SessionId)
+            .Select(g => new { SessionId = g.Key, Tokens = g.Sum(x => x.Tokens) })
+            .ToDictionaryAsync(x => x.SessionId, x => x.Tokens, ct);
+
+        var summaries = sessions.Select(session =>
+        {
+            var tokensUsed = tokensBySession.TryGetValue(session.Id, out var t) ? t : 0;
+            return new SessionDetailResponse(
+                SessionId: session.Id.ToString(),
+                AgentTemplateId: session.AgentTemplateId,
+                Status: session.Status.ToWire(),
+                ContextVersion: session.ContextVersion,
+                StaticEpoch: session.StaticEpoch,
+                CurrentTurn: session.CurrentTurn,
+                TokensUsed: tokensUsed,
+                WatermarkState: WatermarkState.Derive(tokensUsed, session.Policy),
+                CreatedAt: session.CreatedAt,
+                UpdatedAt: session.UpdatedAt);
+        }).ToList();
+
+        return Results.Ok(new SessionListResponse(summaries));
+    }
+
+    /// <summary>
+    /// <c>GET /v1/sessions/events</c> (SSE): langlebiger Stream der Session-Lifecycle-Ereignisse
+    /// des aufgelösten Tenants. Sendet zuerst einen <c>snapshot</c>-Frame (alle aktuellen
+    /// Session-IDs — schließt das Fenster zwischen Snapshot-Read und Stream-Connect), dann live
+    /// <c>session_created</c>/<c>session_archived</c> aus dem <see cref="SessionNotificationHub"/>.
+    /// Heartbeat-Kommentare halten die Verbindung offen; Abbruch über <c>RequestAborted</c>.
+    /// </summary>
+    private static IResult StreamSessionEventsAsync(
+        CtxmanDbContext db,
+        ITenantContext tenant,
+        SessionNotificationHub notifications,
+        CancellationToken ct)
+    {
+        return new SessionEventStreamResult(db, tenant.TenantId, notifications);
     }
 
     private static async Task<IResult> GetSessionAsync(
@@ -179,6 +267,7 @@ public static class SessionEndpoints
         PromotionService promotionService,
         RetentionConfig retention,
         IColdStorageExporter coldStorageExporter,
+        SessionNotificationHub notifications,
         ILoggerFactory loggerFactory,
         CancellationToken ct)
     {
@@ -304,6 +393,11 @@ public static class SessionEndpoints
 
         await db.SaveChangesAsync(ct);
         await tx.CommitAsync(ct);
+
+        // Live-Discovery: Statuswechsel an verbundene SSE-Clients pushen (nach Commit; ein
+        // Idempotency-Replay kehrt oben früh zurück und publiziert daher nicht erneut).
+        notifications.Publish(new SessionNotification(
+            "session_archived", tenant.TenantId, session.Id.ToString(), now));
 
         // Spec §7.1: Cold-Storage-Export nach erfolgreichem Commit (best-effort — Session ist
         // bereits archiviert; ein Export-Fehler darf kein 500 produzieren).
@@ -490,6 +584,104 @@ public static class SessionEndpoints
             role = null;
             error = $"Unknown role '{wire}'.";
             return false;
+        }
+    }
+
+    /// <summary>
+    /// Langlebige SSE-Antwort für <c>GET /v1/sessions/events</c>: snapshot-Frame (aktuelle
+    /// Session-IDs des Tenants) gefolgt von Live-Frames aus dem <see cref="SessionNotificationHub"/>,
+    /// tenant-gefiltert. Heartbeat-Kommentare alle 15 s halten Proxys/Browser-Verbindung offen;
+    /// Ende über <c>RequestAborted</c> (Client trennt) — dann sauberes Unsubscribe.
+    /// </summary>
+    private sealed class SessionEventStreamResult : IResult
+    {
+        private static readonly TimeSpan Heartbeat = TimeSpan.FromSeconds(15);
+
+        private readonly CtxmanDbContext _db;
+        private readonly string _tenantId;
+        private readonly SessionNotificationHub _hub;
+
+        public SessionEventStreamResult(CtxmanDbContext db, string tenantId, SessionNotificationHub hub)
+        {
+            _db = db;
+            _tenantId = tenantId;
+            _hub = hub;
+        }
+
+        public async Task ExecuteAsync(HttpContext httpContext)
+        {
+            var response = httpContext.Response;
+            response.ContentType = "text/event-stream";
+            response.Headers.CacheControl = "no-cache";
+            response.Headers["X-Accel-Buffering"] = "no"; // Nginx: kein Buffering des Streams.
+
+            var ct = httpContext.RequestAborted;
+
+            // Erst subscriben, DANN den Snapshot lesen — so geht ein Create im Zeitfenster
+            // dazwischen nicht verloren (der Client dedupliziert per session_id).
+            var sub = _hub.Subscribe();
+            try
+            {
+                // Sortierung client-seitig (SQLite kann kein ORDER BY DateTimeOffset; siehe ListSessions).
+                var rows = await _db.Sessions
+                    .AsNoTracking()
+                    .Select(s => new { s.Id, s.CreatedAt })
+                    .ToListAsync(ct);
+                var ids = rows
+                    .OrderByDescending(r => r.CreatedAt)
+                    .Select(r => r.Id.ToString())
+                    .ToArray();
+
+                var snapshot = JsonSerializer.Serialize(new { session_ids = ids }, SseOptions);
+                await WriteFrameAsync(response, "snapshot", snapshot, ct);
+
+                while (!ct.IsCancellationRequested)
+                {
+                    SessionNotification notification;
+                    try
+                    {
+                        using var hb = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                        hb.CancelAfter(Heartbeat);
+                        notification = await sub.Reader.ReadAsync(hb.Token);
+                    }
+                    catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+                    {
+                        // Heartbeat-Tick ohne Notification — Kommentar-Frame, Verbindung offen halten.
+                        await response.WriteAsync(": ping\n\n", ct);
+                        await response.Body.FlushAsync(ct);
+                        continue;
+                    }
+
+                    // Tenant-Isolation (Spec §10): nur Ereignisse des aufgelösten Tenants ausliefern.
+                    if (notification.TenantId != _tenantId)
+                    {
+                        continue;
+                    }
+
+                    var data = JsonSerializer.Serialize(
+                        new { session_id = notification.SessionId, at = notification.At },
+                        SseOptions);
+                    await WriteFrameAsync(response, notification.Type, data, ct);
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                // Client hat die Verbindung getrennt — regulärer Stream-Abschluss.
+            }
+            finally
+            {
+                _hub.Unsubscribe(sub.Id);
+            }
+        }
+
+        private static async Task WriteFrameAsync(HttpResponse response, string eventType, string data, CancellationToken ct)
+        {
+            var frame = new StringBuilder()
+                .Append("event: ").Append(eventType).Append('\n')
+                .Append("data: ").Append(data).Append("\n\n")
+                .ToString();
+            await response.WriteAsync(frame, ct);
+            await response.Body.FlushAsync(ct);
         }
     }
 }

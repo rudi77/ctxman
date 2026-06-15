@@ -3,6 +3,7 @@ using Ctxman.Api.Compaction;
 using Ctxman.Api.Endpoints;
 using Ctxman.Api.Gc;
 using Ctxman.Api.Idempotency;
+using Ctxman.Api.Notifications;
 using Ctxman.Api.Observability;
 using Ctxman.Api.Promotion;
 using Ctxman.Api.Storage;
@@ -19,6 +20,7 @@ using Ctxman.Core.Tokenization;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
+using Scalar.AspNetCore;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -186,9 +188,18 @@ builder.Services.AddHostedService<BlobSweepWorker>();
 // Spec §6: Prometheus metrics singleton — collectors register at construction time.
 builder.Services.AddSingleton<CtxmanMetrics>();
 
+// Live-Discovery: In-Memory-Hub für Session-Lifecycle-Push (session_created/_archived). Singleton,
+// damit POST /v1/sessions (Producer) und der SSE-Endpunkt (Consumer) dieselbe Instanz teilen.
+builder.Services.AddSingleton<SessionNotificationHub>();
+
 // Wire-Format ist snake_case (CLAUDE.md): HealthzResponse.AuthMode -> "auth_mode".
 builder.Services.ConfigureHttpJsonOptions(o =>
     o.SerializerOptions.PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.SnakeCaseLower);
+
+// OpenAPI-Dokument für /openapi/v1.json (Microsoft.AspNetCore.OpenApi). Scalar rendert daraus die
+// interaktive API-Referenz unter /scalar. Beide Endpunkte tragen keine ResourceAction-Metadaten,
+// werden also von der CtxmanAuthorizationMiddleware übersprungen (wie /healthz und /metrics).
+builder.Services.AddOpenApi();
 
 var app = builder.Build();
 
@@ -223,6 +234,11 @@ app.UseRouting();
 // Spec §4.1 / §8: Authorization läuft nach TenantResolution (Handler sieht bereits aufgelösten Tenant).
 // Pipeline-Reihenfolge: TenantResolution → [Authentication] → Authorization → Endpoints.
 app.UseMiddleware<CtxmanAuthorizationMiddleware>();
+
+// OpenAPI-JSON unter /openapi/v1.json + Scalar-UI unter /scalar. Im Auth-Modus `none` (Dev)
+// frei erreichbar; in api_key/jwt-Modus greift die normale TenantResolution-Middleware.
+app.MapOpenApi();
+app.MapScalarApiReference();
 
 app.MapGet("/healthz", (IOptions<AuthOptions> options) =>
     Results.Ok(new HealthzResponse("ok", options.Value.Mode.ToWire())));

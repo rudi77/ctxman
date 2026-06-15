@@ -3,6 +3,7 @@ import { api, getTenant, setTenant } from "./api/client";
 import type { Healthz } from "./api/types";
 import { useKnownSessions } from "./state/sessionStore";
 import { useLiveSession } from "./state/useLiveSession";
+import { useSessionDiscovery } from "./state/useSessionDiscovery";
 import { SessionSidebar } from "./components/SessionSidebar";
 import { Dashboard } from "./components/Dashboard";
 import { Playground } from "./components/Playground";
@@ -11,7 +12,7 @@ import { SimulationLab } from "./components/SimulationLab";
 type Tab = "dashboard" | "playground" | "simulation";
 
 export default function App() {
-  const { sessions, add, remove, update } = useKnownSessions();
+  const { sessions, add, discover, remove, update } = useKnownSessions();
   const [selectedId, setSelectedId] = useState<string | null>(sessions[0]?.id ?? null);
   const [tab, setTab] = useState<Tab>("dashboard");
   const [creating, setCreating] = useState(false);
@@ -27,6 +28,9 @@ export default function App() {
   );
 
   const { detail, live, error, refresh } = useLiveSession(known?.id ?? null);
+
+  // Live-Discovery: neue Sessions (egal welcher Client) erscheinen automatisch in der Sidebar.
+  const { summaries, live: discoveryLive } = useSessionDiscovery(discover, tenant);
 
   useEffect(() => {
     const tick = () => api.healthz().then(setHealth).catch(() => setHealth(null));
@@ -67,6 +71,10 @@ export default function App() {
           onChange={(e) => applyTenant(e.target.value)}
           title="X-Tenant-Id-Header (Auth-Modus none); leer = default_tenant"
         />
+        <div className="health" title={discoveryLive ? "SSE-Stream verbunden — neue Sessions erscheinen live" : "Discovery per Poll (SSE nicht verbunden)"}>
+          <span className={`dot ${discoveryLive ? "up" : ""}`} style={{ background: discoveryLive ? undefined : "var(--soft)" }} />
+          {discoveryLive ? "live" : "poll"}
+        </div>
         <div className="health" title={health ? `auth_mode: ${health.auth_mode}` : "API nicht erreichbar"}>
           <span className={`dot ${health ? "up" : ""}`} />
           {health ? `API ok · auth ${health.auth_mode}` : "API offline"}
@@ -75,6 +83,7 @@ export default function App() {
 
       <SessionSidebar
         sessions={sessions}
+        summaries={summaries}
         selectedId={selectedId}
         onSelect={(id) => {
           setSelectedId(id);

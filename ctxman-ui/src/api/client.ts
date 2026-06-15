@@ -87,6 +87,8 @@ export const api = {
 
   getSession: (sid: string) => request<SessionDetail>(`/v1/sessions/${sid}`),
 
+  listSessions: () => request<{ sessions: SessionDetail[] }>("/v1/sessions"),
+
   archiveSession: (sid: string) =>
     request<void>(`/v1/sessions/${sid}/archive`, { method: "POST", body: {}, idempotency: true }),
 
@@ -138,3 +140,84 @@ export const api = {
   events: (sid: string, afterSeq: number) =>
     request<EventsResponse>(`/v1/sessions/${sid}/events?after_seq=${afterSeq}`),
 };
+
+export interface SessionStreamEvent {
+  type: "snapshot" | "session_created" | "session_archived";
+  sessionIds?: string[]; // bei snapshot
+  sessionId?: string; // bei created/archived
+}
+
+/**
+ * Abonniert den tenant-gescopten SSE-Stream GET /v1/sessions/events für Live-Discovery.
+ * fetch-basiert (statt EventSource), damit der X-Tenant-Id-Header mitgeht — EventSource
+ * kann keine Header setzen. Reconnect mit Backoff bei Verbindungsabbruch. Gibt eine
+ * Abbruchfunktion zurück.
+ */
+export function subscribeSessionEvents(onEvent: (ev: SessionStreamEvent) => void): () => void {
+  const controller = new AbortController();
+  let stopped = false;
+
+  const run = async () => {
+    let backoff = 1000;
+    while (!stopped) {
+      try {
+        const headers: Record<string, string> = { Accept: "text/event-stream" };
+        const tenant = getTenant();
+        if (tenant) headers["X-Tenant-Id"] = tenant;
+
+        const res = await fetch(`${BASE}/v1/sessions/events`, { headers, signal: controller.signal });
+        if (!res.ok || !res.body) throw new Error(`SSE ${res.status}`);
+        backoff = 1000; // erfolgreich verbunden — Backoff zurücksetzen.
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          // SSE-Frames sind durch Leerzeilen getrennt.
+          let sep: number;
+          while ((sep = buffer.indexOf("\n\n")) !== -1) {
+            const frame = buffer.slice(0, sep);
+            buffer = buffer.slice(sep + 2);
+            const parsed = parseFrame(frame);
+            if (parsed) onEvent(parsed);
+          }
+        }
+      } catch {
+        if (stopped) return;
+      }
+      // Verbindung beendet/abgerissen — nach Backoff neu verbinden (max 10 s).
+      if (stopped) return;
+      await new Promise((r) => setTimeout(r, backoff));
+      backoff = Math.min(backoff * 2, 10_000);
+    }
+  };
+
+  void run();
+  return () => {
+    stopped = true;
+    controller.abort();
+  };
+}
+
+function parseFrame(frame: string): SessionStreamEvent | null {
+  let event: string | null = null;
+  let data: string | null = null;
+  for (const line of frame.split("\n")) {
+    if (line.startsWith("event: ")) event = line.slice(7).trim();
+    else if (line.startsWith("data: ")) data = line.slice(6);
+    // ": ..."-Kommentare (Heartbeat) werden ignoriert.
+  }
+  if (!event || !data) return null;
+  try {
+    const payload = JSON.parse(data) as { session_ids?: string[]; session_id?: string };
+    if (event === "snapshot") return { type: "snapshot", sessionIds: payload.session_ids ?? [] };
+    if (event === "session_created") return { type: "session_created", sessionId: payload.session_id };
+    if (event === "session_archived") return { type: "session_archived", sessionId: payload.session_id };
+  } catch {
+    return null;
+  }
+  return null;
+}

@@ -135,6 +135,8 @@ textarea { font-family: var(--mono); font-size: 12px; resize: vertical; }
 .session-card .label { font-weight: 600; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .session-card .sid { font-family: var(--mono); font-size: 11px; color: var(--text-faint); }
 .session-card .card-meta { display: flex; gap: 8px; margin-top: 6px; font-size: 11px; color: var(--text-dim); align-items: center; }
+.session-card .discovered-dot { color: var(--accent-2); font-size: 9px; margin-right: 5px; vertical-align: middle; animation: discoveredPulse 2s ease-in-out infinite; }
+@keyframes discoveredPulse { 50% { opacity: 0.35; } }
 .session-card .mini-bar { height: 5px; border-radius: 3px; background: #0d1322; margin-top: 8px; overflow: hidden; position: relative; }
 .session-card .mini-bar .fill { height: 100%; border-radius: 3px; transition: width 0.4s; }
 
