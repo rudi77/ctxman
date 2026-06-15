@@ -32,8 +32,22 @@ public sealed class TenantResolutionMiddleware
         _options = options.Value;
     }
 
+    // Infrastruktur-Endpunkte ohne Tenant-Bezug: Liveness/Readiness (/healthz), Prometheus
+    // (/metrics) und die API-Referenz (/openapi, /scalar). Spec §4.1: in api_key/jwt würde die
+    // Tenant-Auflösung diese sonst mit 401 blockieren — k8s-Probes und Prometheus können aber
+    // keinen Tenant-Key liefern. Diese Pfade lesen nie tenant-gescopte Daten und werden daher
+    // vor der modusabhängigen Auflösung durchgelassen (in allen Modi identisch).
+    private static readonly string[] InfraPaths = { "/healthz", "/metrics", "/openapi", "/scalar" };
+
     public async Task InvokeAsync(HttpContext context, ITenantContext tenantContext)
     {
+        // Spec §4.1: Infrastruktur-Endpunkte sind tenant-frei und auth-frei (Health/Metrics/Docs).
+        if (IsInfraPath(context.Request.Path))
+        {
+            await _next(context);
+            return;
+        }
+
         // Spec §4.1: Tenant-Auflösung ist modusabhängig.
         switch (_options.Mode)
         {
@@ -113,6 +127,19 @@ public sealed class TenantResolutionMiddleware
         }
 
         return null;
+    }
+
+    private static bool IsInfraPath(PathString path)
+    {
+        foreach (var infra in InfraPaths)
+        {
+            if (path.StartsWithSegments(infra, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private string ResolveFromHeaderOrDefault(HttpContext context)

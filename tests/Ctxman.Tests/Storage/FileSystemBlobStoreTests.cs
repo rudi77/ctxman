@@ -126,6 +126,42 @@ public sealed class FileSystemBlobStoreTests : IDisposable
         await _store.Delete("tenant-a", "0000000000000000000000000000000000000000000000000000000000000000", CancellationToken.None);
     }
 
+    // Spec §10: ein client-gelieferter blob_ref.key darf nicht als Path-Traversal durchschlagen.
+    [Theory]
+    [InlineData("../../../etc/passwd")]
+    [InlineData("../tenant-b/0000000000000000000000000000000000000000000000000000000000000000")]
+    [InlineData("not-a-sha")]
+    [InlineData("ABCDEF0000000000000000000000000000000000000000000000000000000000")] // uppercase ⇒ kein gültiger Key
+    public async Task Exists_NonContentAddressedKey_IsFalse(string key)
+    {
+        Assert.False(await _store.Exists("tenant-a", key, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task Get_TraversalKey_DoesNotReadOutsideTenantDir()
+    {
+        // Datei außerhalb des Tenant-Verzeichnisses anlegen (Geheimnis des "Hosts").
+        Directory.CreateDirectory(_root);
+        var secretPath = Path.Combine(_root, "host-secret.txt");
+        await File.WriteAllTextAsync(secretPath, "TOP SECRET");
+
+        // Ein traversierender Key (kein sha256) darf die Datei nicht erreichen.
+        await Assert.ThrowsAsync<FileNotFoundException>(async () =>
+            await _store.Get("tenant-a", "../host-secret.txt", CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task Delete_TraversalKey_DoesNotDeleteOutsideFile()
+    {
+        Directory.CreateDirectory(_root);
+        var victimPath = Path.Combine(_root, "victim.txt");
+        await File.WriteAllTextAsync(victimPath, "keep me");
+
+        await _store.Delete("tenant-a", "../victim.txt", CancellationToken.None);
+
+        Assert.True(File.Exists(victimPath));
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(_root))

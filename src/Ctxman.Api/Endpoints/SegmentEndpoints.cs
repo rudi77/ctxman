@@ -30,6 +30,26 @@ public static class SegmentEndpoints
     // Spec §4.3: Inline-content über 1 MiB ⇒ 413; großer Inhalt läuft über den Blob-Upload-Pfad.
     private const int MaxInlineContentBytes = 1_048_576;
 
+    // Spec §2.6: Blob-Keys sind content-addressed (sha256, 64 lowercase-hex). Verhindert, dass ein
+    // client-gelieferter blob_ref.key als Path-Traversal in den IBlobStore durchschlägt (Spec §10).
+    private static bool IsValidBlobKey(string? key)
+    {
+        if (key is not { Length: 64 })
+        {
+            return false;
+        }
+
+        foreach (var c in key)
+        {
+            if (c is not (>= '0' and <= '9' or >= 'a' and <= 'f'))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
     // Spec §6: Event-Payload ist kanonisches snake_case-JSON.
     private static readonly JsonSerializerOptions EventPayloadOptions = new()
     {
@@ -215,6 +235,18 @@ public static class SegmentEndpoints
             Segment segment;
             if (item.BlobRef is not null)
             {
+                // Spec §2.6 / §10: blob_ref.key ist content-addressed (sha256). Ein client-gelieferter
+                // Key fließt später ungeprüft in den IBlobStore (Pfad-/Prefix-Adressierung) — ein
+                // Nicht-sha256-Key (z. B. "../../etc/passwd") ermöglichte Path-Traversal und
+                // Cross-Tenant-Zugriff. Daher hier hart validieren, bevor er persistiert wird.
+                if (!IsValidBlobKey(item.BlobRef.Key))
+                {
+                    return Results.BadRequest(new
+                    {
+                        error = "blob_ref.key must be a lowercase sha-256 hex digest (Spec §2.6).",
+                    });
+                }
+
                 // Spec §4.3 / §2.6: blob_ref ⇒ von Anfang an externalisiert. Keine 1-MB-Prüfung
                 // (gilt nur für Inline-content). Tokens aus verfügbarem content oder 0.
                 var blobRef = new BlobRef(
@@ -323,8 +355,12 @@ public static class SegmentEndpoints
             response,
             ct);
 
-        await db.SaveChangesAsync(ct);
-        await tx.CommitAsync(ct);
+        // Spec §4.4: Concurrency-Konflikt ⇒ 409; Idempotency-Key-Race ⇒ Replay statt Doppel-Append.
+        var conflict = await MutationCommit.TryCommitAsync(db, tx, idempotency, idempotencyKey, ct);
+        if (conflict is not null)
+        {
+            return conflict;
+        }
 
         return Results.Created($"/v1/sessions/{session.Id}/segments", response);
     }

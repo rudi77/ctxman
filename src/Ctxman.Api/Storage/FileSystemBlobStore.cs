@@ -71,6 +71,13 @@ public sealed class FileSystemBlobStore : IBlobStore
 
     public ValueTask<Stream> Get(string tenantId, string key, CancellationToken ct)
     {
+        // Spec §10: nur content-addressed Keys (sha256) sind adressierbar — schützt gegen
+        // Path-Traversal über einen manipulierten Key (z. B. "../<tenant>/<key>").
+        if (!IsBlobKey(key))
+        {
+            throw new FileNotFoundException("Blob not found.", key);
+        }
+
         var path = Path.Combine(_root, tenantId, key);
         Stream stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
         return ValueTask.FromResult(stream);
@@ -78,6 +85,13 @@ public sealed class FileSystemBlobStore : IBlobStore
 
     public ValueTask<bool> Exists(string tenantId, string key, CancellationToken ct)
     {
+        // Spec §10: ein Nicht-sha256-Key adressiert per Definition keinen Blob ⇒ false statt
+        // Pfad-Auflösung (Path-Traversal-Schutz, Defense-in-Depth zur Append-Validierung).
+        if (!IsBlobKey(key))
+        {
+            return ValueTask.FromResult(false);
+        }
+
         var path = Path.Combine(_root, tenantId, key);
         return ValueTask.FromResult(File.Exists(path));
     }
@@ -113,6 +127,12 @@ public sealed class FileSystemBlobStore : IBlobStore
 
     public ValueTask Delete(string tenantId, string key, CancellationToken ct)
     {
+        // Spec §10: nur content-addressed Keys löschen — niemals einen traversierenden Pfad.
+        if (!IsBlobKey(key))
+        {
+            return ValueTask.CompletedTask;
+        }
+
         var path = Path.Combine(_root, tenantId, key);
         // Idempotent: kein Fehler, wenn die Datei (oder das Tenant-Verzeichnis) nicht existiert.
         if (File.Exists(path))

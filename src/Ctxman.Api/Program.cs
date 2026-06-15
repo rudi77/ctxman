@@ -69,6 +69,10 @@ builder.Services.AddSingleton<ICtxmanAuthorizationHandler, AllowAllWithinTenantA
 // Spec §4.4: Replay-/Store-Logik für den Idempotency-Key, geteilt von den mutierenden Endpunkten.
 builder.Services.AddScoped<IdempotencyService>();
 
+// Spec §4.4: abgelaufene Idempotency-Keys (24 h Retention) periodisch löschen, sonst wächst die
+// Tabelle unbegrenzt. Nutzt den TimeProvider (weiter unten registriert) als Clock-Abstraktion.
+builder.Services.AddHostedService<IdempotencyPurgeWorker>();
+
 // Spec §3.3: PromotionService extrahiert Fakten via ICompactionModel und schreibt an IPromotionSink.
 // Scoped (nicht Singleton): nutzt Singleton ICompactionModel + IPromotionSink — kein Captive-Dependency.
 // Gibt PendingPromotionEvent-Liste zurück (ohne seq); Caller setzt seq im eigenen Transaction-Scope.
