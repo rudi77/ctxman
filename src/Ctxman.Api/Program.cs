@@ -135,9 +135,23 @@ builder.Services.AddSingleton<IColdStorageExporter, ColdStorageExporter>();
 builder.Services.AddSingleton<ChannelGcJobQueue>();
 builder.Services.AddSingleton<IGcJobQueue>(sp => sp.GetRequiredService<ChannelGcJobQueue>());
 
-// Spec §8: Shared per-Session-Lock (Minor + Major teilen denselben Singleton — WP5 Subtask 5).
-// Entspricht dem SQLite-Äquivalent zu pg_advisory_lock(session_id); echter Postgres-Lock in WP7.
-builder.Services.AddSingleton<SessionGcLocks>();
+// Spec §8: Per-Session-GC-Lock (Minor + Major teilen ihn — niemals zwei parallele Collections
+// auf derselben Session). Über Postgres als echter pg_advisory_lock(session_id), damit die
+// Serialisierung auch über mehrere stateless Replikas hinweg gilt; auf SQLite (Tests/Dev) als
+// prozesslokaler, referenzgezählter Lock. Auswahl über das Connection-String-Schema.
+var gcLockConnectionString = builder.Configuration.GetConnectionString("ctxman")
+    ?? "Host=localhost;Database=ctxman;Username=ctxman;Password=ctxman";
+var gcLockUsesPostgres =
+    gcLockConnectionString.Contains("Host=", StringComparison.OrdinalIgnoreCase)
+    || gcLockConnectionString.Contains("Server=", StringComparison.OrdinalIgnoreCase);
+if (gcLockUsesPostgres)
+{
+    builder.Services.AddSingleton<ISessionGcLock>(_ => new PostgresSessionGcLock(gcLockConnectionString));
+}
+else
+{
+    builder.Services.AddSingleton<ISessionGcLock, InProcessSessionGcLock>();
+}
 
 // Spec §3.3 / §8: CompactionOptions aus Sektion "Compaction" (Non-Goal N5: Credentials via Config).
 builder.Services.Configure<CompactionOptions>(builder.Configuration.GetSection(CompactionOptions.SectionName));

@@ -61,8 +61,9 @@ public sealed class MajorCollection
     /// <see cref="MinorGcWorker.RunMinorAsync"/>.
     ///
     /// Serialisierungs-Garantie (Spec §3.3 step 3 / §8):
-    /// Alle GC-Läufe auf einer Session werden durch den gemeinsamen <see cref="SessionGcLocks"/>-
-    /// Singleton serialisiert — niemals zwei parallele Collections auf derselben Session.
+    /// Alle GC-Läufe auf einer Session werden durch den <see cref="ISessionGcLock"/> (vom
+    /// <see cref="MinorGcWorker"/> pro session_id gehalten) serialisiert — niemals zwei parallele
+    /// Collections auf derselben Session.
     /// Das Compaction-Fenster wird durch die Segment-IDs zum Planungszeitpunkt eingefroren
     /// (<c>frozenWindowIds</c>); Segmente, die danach angehängt werden, erhalten eine strikt
     /// höhere <c>seq</c> / gehören zu einer späteren <c>context_version</c> und sind nie
@@ -262,7 +263,7 @@ public sealed class MajorCollection
         catch (DbUpdateConcurrencyException ex)
         {
             // Defense-in-depth: unreachable until an optimistic-concurrency token is added (WP7); harmless guard.
-            // The actual serialization guarantee today is provided by SessionGcLocks (see ExecuteAsync doc comment).
+            // The actual serialization guarantee is provided by the ISessionGcLock held by MinorGcWorker.
             _logger.LogWarning(ex,
                 "Major collection: concurrency conflict for session {SessionId} — discarding run.",
                 sessionId);

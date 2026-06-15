@@ -12,10 +12,11 @@ namespace Ctxman.Api.Gc;
 /// Hintergrund-Worker für GC-Jobs (Spec §3.2 / §8). Liest <see cref="MinorGcJob"/>s aus dem
 /// <see cref="ChannelGcJobQueue"/> und arbeitet sie außerhalb des Request-Pfads ab.
 ///
-/// Per-Session-Serialisierung (Spec §8 <c>pg_advisory_lock(session_id)</c>): Minor und Major
-/// teilen sich denselben <see cref="SessionGcLocks"/>-Singleton, damit niemals zwei parallele
-/// Collections (gleich welcher Granularität) auf derselben Session laufen. Der echte Advisory-
-/// Lock über Postgres folgt in WP7; das Semaphor ist das SQLite-Test-Äquivalent.
+/// Nebenläufigkeit (Spec §8): mehrere Consumer-Loops verarbeiten Jobs PARALLEL, damit ein
+/// langsamer Major-Job (LLM-I/O, bis zu Sekunden) nicht die GC aller anderen Sessions blockiert
+/// (Head-of-Line-Blocking). Die Serialisierung „keine zwei parallelen Collections auf derselben
+/// Session" bleibt erhalten — sie wird vom <see cref="ISessionGcLock"/> pro session_id erzwungen
+/// (prozesslokal in Tests, <c>pg_advisory_lock(session_id)</c> über Replikas hinweg in Produktion).
 ///
 /// Tenant-Scope: der Worker läuft OHNE HTTP-Request, also ohne von der Middleware gesetzten
 /// <see cref="ITenantContext"/>. Pro Job wird ein eigener DI-Scope gebaut und der
@@ -24,9 +25,13 @@ namespace Ctxman.Api.Gc;
 /// </summary>
 public sealed class MinorGcWorker : BackgroundService
 {
+    // Spec §8: Grad der Job-Parallelität. Pro-Session-Serialisierung übernimmt der ISessionGcLock —
+    // diese Schranke verhindert nur, dass beliebig viele LLM-Major-Jobs gleichzeitig laufen.
+    private const int MaxConcurrency = 4;
+
     private readonly ChannelGcJobQueue _queue;
     private readonly IServiceScopeFactory _scopeFactory;
-    private readonly SessionGcLocks _sessionLocks;
+    private readonly ISessionGcLock _sessionLock;
     private readonly MajorCollection _majorCollection;
     private readonly ILogger<MinorGcWorker> _logger;
 
@@ -39,18 +44,30 @@ public sealed class MinorGcWorker : BackgroundService
     public MinorGcWorker(
         ChannelGcJobQueue queue,
         IServiceScopeFactory scopeFactory,
-        SessionGcLocks sessionLocks,
+        ISessionGcLock sessionLock,
         MajorCollection majorCollection,
         ILogger<MinorGcWorker> logger)
     {
         _queue = queue;
         _scopeFactory = scopeFactory;
-        _sessionLocks = sessionLocks;
+        _sessionLock = sessionLock;
         _majorCollection = majorCollection;
         _logger = logger;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        // Spec §8: mehrere parallele Consumer auf derselben Queue (kein Head-of-Line-Blocking).
+        var consumers = new Task[MaxConcurrency];
+        for (var i = 0; i < MaxConcurrency; i++)
+        {
+            consumers[i] = ConsumeAsync(stoppingToken);
+        }
+
+        await Task.WhenAll(consumers);
+    }
+
+    private async Task ConsumeAsync(CancellationToken stoppingToken)
     {
         await foreach (var job in _queue.Reader.ReadAllAsync(stoppingToken))
         {
@@ -79,23 +96,16 @@ public sealed class MinorGcWorker : BackgroundService
     private async Task ProcessJobAsync(MinorGcJob job, CancellationToken ct)
     {
         // Spec §8: Minor und Major teilen denselben Per-Session-Lock — niemals zwei parallele
-        // Collections auf derselben Session (pg_advisory_lock(session_id)-Äquivalent).
-        var sessionLock = _sessionLocks.GetLock(job.SessionId);
-        await sessionLock.WaitAsync(ct);
-        try
+        // Collections auf derselben Session (pg_advisory_lock(session_id) / prozesslokales Äquivalent).
+        await using var handle = await _sessionLock.AcquireAsync(job.TenantId, job.SessionId, ct);
+
+        if (job.Level == GcLevel.Major)
         {
-            if (job.Level == GcLevel.Major)
-            {
-                await _majorCollection.ExecuteAsync(job.TenantId, job.SessionId, ct);
-            }
-            else
-            {
-                await RunMinorAsync(job, ct);
-            }
+            await _majorCollection.ExecuteAsync(job.TenantId, job.SessionId, ct);
         }
-        finally
+        else
         {
-            sessionLock.Release();
+            await RunMinorAsync(job, ct);
         }
     }
 
