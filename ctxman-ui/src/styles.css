@@ -175,6 +175,44 @@ textarea { font-family: var(--mono); font-size: 12px; resize: vertical; }
 }
 .panel > h3 .hint { text-transform: none; letter-spacing: 0; font-weight: 400; color: var(--text-faint); }
 
+/* Info-Marker: hält lange Erläuterungen im Tooltip, statt das Panel zuzutexten. */
+.info-hint {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 15px; height: 15px; border-radius: 50%;
+  border: 1px solid var(--border-strong); color: var(--text-faint);
+  background: var(--bg-panel-2);
+  font-family: "Segoe UI", system-ui, sans-serif;
+  font-size: 10px; font-weight: 700; font-style: italic; line-height: 1;
+  text-transform: none; letter-spacing: 0; cursor: help;
+  transition: color 0.15s, border-color 0.15s;
+}
+.info-hint:hover, .info-hint:focus { color: var(--accent-2); border-color: var(--accent-2); outline: none; }
+
+/* Aufklappbarer Sekundärbereich, damit das Dashboard nicht alles auf einmal zeigt. */
+.disclosure { margin-bottom: 14px; }
+.disclosure > summary {
+  list-style: none; cursor: pointer; user-select: none;
+  display: flex; align-items: center; gap: 8px;
+  padding: 9px 14px;
+  background: var(--bg-panel); border: 1px solid var(--border); border-radius: var(--radius);
+  font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 1px;
+  color: var(--text-dim);
+  transition: border-color 0.15s, color 0.15s;
+}
+.disclosure > summary::-webkit-details-marker { display: none; }
+.disclosure > summary:hover { border-color: var(--border-strong); color: var(--text); }
+.disclosure > summary .chevron { transition: transform 0.2s; color: var(--text-faint); font-size: 10px; }
+.disclosure[open] > summary { border-color: var(--border-strong); color: var(--text); border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
+.disclosure[open] > summary .chevron { transform: rotate(90deg); }
+.disclosure > summary .summary-sub { margin-left: auto; font-weight: 400; text-transform: none; letter-spacing: 0; color: var(--text-faint); }
+.disclosure .disclosure-body {
+  border: 1px solid var(--border-strong); border-top: none;
+  border-radius: 0 0 var(--radius) var(--radius);
+  padding: 14px; background: rgba(13, 19, 34, 0.35);
+}
+.disclosure .disclosure-body > .panel:last-child,
+.disclosure .disclosure-body > .grid-2:last-child { margin-bottom: 0; }
+
 .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; align-items: start; }
 .grid-2 .panel { margin-bottom: 0; }
 .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
@@ -202,56 +240,68 @@ textarea { font-family: var(--mono); font-size: 12px; resize: vertical; }
 
 /* ---------- Memory map ---------- */
 .memmap-region-label {
-  display: flex; align-items: center; gap: 8px;
-  font-size: 11px; color: var(--text-faint); text-transform: uppercase; letter-spacing: 1px;
-  margin: 10px 0 6px;
+  display: flex; align-items: center; gap: 10px;
+  font-size: 11px; font-weight: 600; color: var(--text-dim); letter-spacing: 0.4px;
+  margin: 14px 0 8px;
 }
+.memmap-region-label:first-child { margin-top: 2px; }
 .memmap-region-label .line { flex: 1; height: 1px; background: var(--border); }
-.memmap { display: flex; flex-wrap: wrap; gap: 4px; align-items: stretch; min-height: 34px; }
+.memmap { display: flex; flex-wrap: wrap; gap: 5px; align-items: stretch; min-height: 30px; }
 .memblock {
   position: relative;
-  height: 34px;
-  border-radius: 5px;
+  height: 30px;
+  border-radius: 4px;
   cursor: pointer;
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(0, 0, 0, 0.18);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
   overflow: hidden;
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: transform 0.1s, box-shadow 0.15s, opacity 0.3s;
-  animation: blockIn 0.35s ease;
+  transition: transform 0.12s ease, box-shadow 0.15s ease, opacity 0.3s ease, filter 0.15s ease;
+  animation: blockIn 0.25s ease both;
 }
-@keyframes blockIn { from { transform: scale(0.6); opacity: 0; } to { transform: scale(1); opacity: 1; } }
-.memblock:hover { transform: translateY(-2px); box-shadow: 0 3px 10px rgba(0,0,0,0.5); z-index: 2; }
-.memblock.selected { box-shadow: 0 0 0 2px var(--accent-2); z-index: 2; }
+@keyframes blockIn { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
+.memblock:hover { filter: brightness(1.12); box-shadow: 0 2px 8px rgba(0,0,0,0.45); z-index: 2; }
+.memblock.selected { box-shadow: 0 0 0 2px var(--accent-2), 0 2px 8px rgba(0,0,0,0.45); z-index: 2; }
 .memblock.externalized {
-  background-image: repeating-linear-gradient(135deg, rgba(0,0,0,0.35) 0 5px, transparent 5px 10px) !important;
+  background-image: repeating-linear-gradient(135deg, rgba(0,0,0,0.32) 0 5px, transparent 5px 10px) !important;
 }
-.memblock.dead { opacity: 0.28; filter: grayscale(0.7); height: 22px; }
-.memblock.compacting { animation: pulse 1s ease-in-out infinite; }
-@keyframes pulse { 50% { opacity: 0.4; } }
-.memblock .pin {
-  position: absolute; top: 1px; right: 2px; font-size: 9px; line-height: 1;
-  filter: drop-shadow(0 0 2px black);
+.memblock.dead { opacity: 0.3; filter: grayscale(0.7); height: 20px; box-shadow: none; }
+.memblock.compacting { animation: pulse 1.4s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: 0.55; } }
+/* Gepinnt: dezenter Eckmarker statt Emoji */
+.memblock.pinned::after {
+  content: ""; position: absolute; top: 0; right: 0;
+  border-width: 0 8px 8px 0; border-style: solid;
+  border-color: transparent var(--pin) transparent transparent;
 }
 .memblock .blk-label {
-  font-size: 9px; font-weight: 700; color: rgba(255,255,255,0.92);
-  text-shadow: 0 1px 2px rgba(0,0,0,0.7); white-space: nowrap; overflow: hidden;
-  padding: 0 4px;
+  font-size: 9.5px; font-weight: 600; letter-spacing: 0.2px; color: rgba(255,255,255,0.95);
+  text-shadow: 0 1px 2px rgba(0,0,0,0.55); white-space: nowrap; overflow: hidden;
+  padding: 0 5px;
 }
 /* Frame-/Source-Sektionen innerhalb der Memory-Map */
 .memmap-section {
   border-left: 2px solid var(--border-strong);
-  padding: 4px 0 6px 12px;
-  margin: 8px 0;
+  padding: 2px 0 8px 14px;
+  margin: 10px 0;
 }
-.memmap-section.static { border-left-color: #6366f1; }
-.memmap-section.popped { opacity: 0.55; border-left-style: dashed; }
+.memmap-section.static { border-left-color: #7c74e0; }
+.memmap-section.frame { border-left-color: var(--accent-2); }
+.memmap-section.popped { opacity: 0.5; border-left-style: dashed; }
 .memmap-section .section-head {
-  display: flex; gap: 10px; align-items: baseline; margin-bottom: 6px;
+  display: flex; gap: 9px; align-items: center; margin-bottom: 8px;
 }
-.memmap-section .section-name { font-size: 12px; font-weight: 700; color: var(--text); }
-.memmap-section .section-meta { font-size: 11px; color: var(--text-faint); font-family: var(--mono); }
+.memmap-section .section-tag {
+  font-size: 9.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.8px;
+  color: var(--text-faint); background: var(--bg-panel-2); border: 1px solid var(--border);
+  border-radius: 4px; padding: 1px 6px;
+}
+.memmap-section.static .section-tag { color: #a5a0ee; border-color: #36307a; }
+.memmap-section.frame .section-tag { color: var(--accent-2); border-color: #1d4e57; }
+.memmap-section .section-name { font-size: 12.5px; font-weight: 600; color: var(--text); }
+.memmap-section .section-meta { font-size: 11px; color: var(--text-faint); font-family: var(--mono); margin-left: auto; }
 
 /* Hover-Preview: zeigt den Inhalt des Blocks unter der Map */
 .memmap-preview {
@@ -302,9 +352,18 @@ textarea { font-family: var(--mono); font-size: 12px; resize: vertical; }
   white-space: pre-wrap; word-break: break-word; max-height: 180px; overflow-y: auto;
 }
 
-.memmap-legend { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 12px; }
-.memmap-legend .item { display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--text-dim); }
+.memmap-legend {
+  display: flex; flex-wrap: wrap; gap: 8px 14px; margin-top: 16px;
+  padding-top: 12px; border-top: 1px solid var(--border);
+}
+.memmap-legend .item { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-dim); }
 .memmap-legend .swatch { width: 11px; height: 11px; border-radius: 3px; }
+.memmap-legend .pin-swatch { position: relative; background: var(--bg-panel-2); border: 1px solid var(--border-strong); }
+.memmap-legend .pin-swatch::after {
+  content: ""; position: absolute; top: -1px; right: -1px;
+  border-width: 0 7px 7px 0; border-style: solid;
+  border-color: transparent var(--pin) transparent transparent;
+}
 
 /* ---------- Gauge ---------- */
 .gauge-wrap { display: flex; flex-direction: column; gap: 6px; }
