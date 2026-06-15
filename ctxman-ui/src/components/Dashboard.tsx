@@ -11,6 +11,7 @@ import { TokenTimeline } from "./TokenTimeline";
 import { EventFeed } from "./EventFeed";
 import { FrameStack } from "./FrameStack";
 import { SegmentInspector } from "./SegmentInspector";
+import { InfoHint } from "./InfoHint";
 
 interface Props {
   known: KnownSession;
@@ -94,14 +95,16 @@ export function Dashboard({ known, detail, live, pinnedIds, onPinChange, refresh
 
       <div className="panel">
         <h3>
-          Budget &amp; Watermarks <span className="hint">— Spec §3.1: soft → Minor GC, hard → Major GC, emergency → synchrone Not-Eviction</span>
+          Budget &amp; Watermarks
+          <InfoHint text="Spec §3.1: soft → Minor GC, hard → Major GC, emergency → synchrone Not-Eviction." />
         </h3>
         <BudgetGauge tokensUsed={detail.tokens_used} budget={budget} watermarks={watermarks} />
       </div>
 
       <div className="panel">
         <h3>
-          Memory-Map <span className="hint">— Static (Stack) / Working Set (Heap), Blockbreite ∝ Tokens, Klick für Details</span>
+          Memory-Map
+          <InfoHint text="Static (Stack) / Working Set (Heap). Blockbreite ∝ Tokens (log-skaliert), Farbe = Kind. Hover zeigt den Inhalt, Klick öffnet den Inspektor." />
         </h3>
         <MemoryMap
           sessionId={known.id}
@@ -116,49 +119,15 @@ export function Dashboard({ known, detail, live, pinnedIds, onPinChange, refresh
         />
       </div>
 
-      <div className="panel">
-        <h3>
-          Live-Context <span className="hint">— das echte Render-Ergebnis: genau das sieht das Modell (Ground Truth vom Service)</span>
-        </h3>
-        <ContextView sessionId={known.id} />
-      </div>
-
       <div className="grid-2" style={{ marginBottom: 14 }}>
-        <div className="panel">
-          <h3>Token-Timeline <span className="hint">— tokens_total je render_served, Sägezahn = GC wirkt</span></h3>
-          <TokenTimeline points={live.timeline} budget={budget} watermarks={watermarks} />
-          {live.timeline.length > 0 && (
-            <div className="muted" style={{ marginTop: 8, fontFamily: "var(--mono)" }}>
-              cache_prefix_hash: {live.timeline[live.timeline.length - 1].cachePrefixHash.slice(0, 16)}…
-            </div>
-          )}
+        <div className="panel" style={{ marginBottom: 0 }}>
+          <h3>
+            Live-Context
+            <InfoHint text="Das echte Render-Ergebnis: genau das sieht das Modell (Ground Truth vom Service)." />
+          </h3>
+          <ContextView sessionId={known.id} />
         </div>
-        <div className="col">
-          <div className="panel" style={{ marginBottom: 0 }}>
-            <h3>Frame-Stack <span className="hint">— Subagent-Frames (Spec §2.5), LIFO</span></h3>
-            <FrameStack frames={frames} />
-          </div>
-          <div className="panel" style={{ marginBottom: 0 }}>
-            <h3>GC-Aktivität</h3>
-            <div className="counter-chips">
-              <span className="chip">externalisiert <b>{live.counters.externalized}</b></span>
-              <span className="chip">Segmente evicted <b>{live.counters.evictedSegments}</b></span>
-              <span className="chip">Units evicted <b>{live.counters.evictedUnits}</b></span>
-              <span className="chip">Compactions <b>{live.counters.compactions}</b></span>
-              <span className="chip">Page Faults <b>{live.counters.pageFaults}</b></span>
-              <span className="chip">Promotions <b>{live.counters.promotions}</b></span>
-              <span className="chip">Blobs swept <b>{live.counters.blobsSwept}</b></span>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div className="grid-2">
-        <div className="panel">
-          <h3>Event-Stream <span className="hint">— Outbox live (Spec §6), Klick öffnet Payload</span></h3>
-          <EventFeed events={live.events} />
-        </div>
-        <div className="panel">
+        <div className="panel" style={{ marginBottom: 0 }}>
           <h3>Segment-Inspektor</h3>
           <SegmentInspector
             sessionId={known.id}
@@ -169,6 +138,59 @@ export function Dashboard({ known, detail, live, pinnedIds, onPinChange, refresh
           />
         </div>
       </div>
+
+      <details className="disclosure">
+        <summary>
+          <span className="chevron">▶</span>
+          Analyse &amp; Events
+          <span className="summary-sub">Token-Timeline · Frame-Stack · GC · Event-Stream</span>
+        </summary>
+        <div className="disclosure-body">
+          <div className="grid-2" style={{ marginBottom: 14 }}>
+            <div className="panel" style={{ marginBottom: 0 }}>
+              <h3>
+                Token-Timeline
+                <InfoHint text="tokens_total je render_served — der Sägezahn zeigt, wann der GC wirkt." />
+              </h3>
+              <TokenTimeline points={live.timeline} budget={budget} watermarks={watermarks} />
+              {live.timeline.length > 0 && (
+                <div className="muted" style={{ marginTop: 8, fontFamily: "var(--mono)" }}>
+                  cache_prefix_hash: {live.timeline[live.timeline.length - 1].cachePrefixHash.slice(0, 16)}…
+                </div>
+              )}
+            </div>
+            <div className="col">
+              <div className="panel" style={{ marginBottom: 0 }}>
+                <h3>
+                  Frame-Stack
+                  <InfoHint text="Subagent-Frames (Spec §2.5), LIFO — Root unten, offene Frames oben." />
+                </h3>
+                <FrameStack frames={frames} />
+              </div>
+              <div className="panel" style={{ marginBottom: 0 }}>
+                <h3>GC-Aktivität</h3>
+                <div className="counter-chips">
+                  <span className="chip">externalisiert <b>{live.counters.externalized}</b></span>
+                  <span className="chip">Segmente evicted <b>{live.counters.evictedSegments}</b></span>
+                  <span className="chip">Units evicted <b>{live.counters.evictedUnits}</b></span>
+                  <span className="chip">Compactions <b>{live.counters.compactions}</b></span>
+                  <span className="chip">Page Faults <b>{live.counters.pageFaults}</b></span>
+                  <span className="chip">Promotions <b>{live.counters.promotions}</b></span>
+                  <span className="chip">Blobs swept <b>{live.counters.blobsSwept}</b></span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="panel" style={{ marginBottom: 0 }}>
+            <h3>
+              Event-Stream
+              <InfoHint text="Outbox live (Spec §6) — neueste zuerst, filterbar; Klick öffnet die Payload." />
+            </h3>
+            <EventFeed events={live.events} />
+          </div>
+        </div>
+      </details>
     </div>
   );
 }

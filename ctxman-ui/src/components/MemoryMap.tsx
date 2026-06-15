@@ -124,6 +124,7 @@ export function MemoryMap({
       s.state === "externalized" ? "externalized" : "",
       dead ? "dead" : "",
       s.compacting ? "compacting" : "",
+      pinnedIds.has(s.id) ? "pinned" : "",
       selectedId === s.id ? "selected" : "",
     ]
       .filter(Boolean)
@@ -136,8 +137,8 @@ export function MemoryMap({
         onMouseEnter={() => setHover(previewFor(s))}
         onMouseLeave={() => setHover(null)}
         onClick={() => onSelect(selectedId === s.id ? null : s)}
+        title={pinnedIds.has(s.id) ? "gepinnt" : undefined}
       >
-        {pinnedIds.has(s.id) && <span className="pin">📌</span>}
         <span className="blk-label">{s.kind.replace(/_/g, " ")}</span>
       </div>
     );
@@ -169,7 +170,8 @@ export function MemoryMap({
         ).map(([source, entries]) => (
           <div key={source} className="memmap-section static">
             <div className="section-head">
-              <span className="section-name">⚙ {source}</span>
+              <span className="section-tag">static</span>
+              <span className="section-name">{source}</span>
               <span className="section-meta">{entries.length} Segment(e)</span>
             </div>
             <div className="memmap">
@@ -234,11 +236,10 @@ export function MemoryMap({
           .filter((s) => s.state === "live" || s.state === "externalized")
           .reduce((sum, s) => sum + s.tokens, 0);
         return (
-          <div key={frame?.id ?? "root"} className={`memmap-section ${frame?.status === "popped" ? "popped" : ""}`}>
+          <div key={frame?.id ?? "root"} className={`memmap-section ${frame === null ? "root" : "frame"} ${frame?.status === "popped" ? "popped" : ""}`}>
             <div className="section-head">
-              <span className="section-name">
-                {frame === null ? "⌂ Root" : `🪆 Frame „${frame.label}"`}
-              </span>
+              <span className="section-tag">{frame === null ? "root" : "frame"}</span>
+              <span className="section-name">{frame === null ? "Root-Context" : frame.label || "(ohne Label)"}</span>
               <span className="section-meta">
                 {frame !== null && (frame.status === "open" ? "offen · " : "gepoppt · ")}
                 {segs.length} Segmente · {formatTokens(tokens)} tok live
@@ -282,7 +283,10 @@ export function MemoryMap({
           <span className="swatch" style={{ background: "#334155", opacity: 0.4 }} />
           evicted / compacted
         </span>
-        <span className="item">📌 gepinnt</span>
+        <span className="item">
+          <span className="swatch pin-swatch" />
+          gepinnt
+        </span>
       </div>
     </div>
   );

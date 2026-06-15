@@ -1,29 +1,33 @@
 // Farbzuordnung pro Segment-Kind (Spec §2.3 Startvokabular); unbekannte Kinds
 // bekommen eine stabile Hash-Farbe, damit die Memory-Map konsistent bleibt.
 
+// Kohärente, leicht entsättigte Palette: nach Funktion gruppiert (Static/Tools =
+// Indigo-Familie, Konversation = Blau/Teal, Tool-I/O = Bernstein, Meta = Pink/Teal),
+// damit die Memory-Map ruhig wirkt statt wie ein Regenbogen.
 const KIND_COLORS: Record<string, string> = {
-  system_prompt: "#8b5cf6",
-  tool_def: "#6366f1",
-  skill_index: "#818cf8",
-  skill_content: "#84cc16",
-  mcp_resource: "#65a30d",
-  task: "#d946ef",
-  decision: "#ec4899",
-  user_msg: "#3b82f6",
-  assistant_msg: "#10b981",
-  tool_call: "#f59e0b",
-  tool_result: "#fb923c",
-  subagent_return: "#22d3ee",
-  ref_expansion: "#a3e635",
-  compaction_summary: "#14b8a6",
+  system_prompt: "#7c74e0",
+  tool_def: "#6366cf",
+  skill_index: "#8b8fe6",
+  skill_content: "#4f9d6b",
+  mcp_resource: "#3f8a5c",
+  task: "#b266c4",
+  decision: "#c76896",
+  user_msg: "#4f86d6",
+  assistant_msg: "#3aa88a",
+  tool_call: "#d39341",
+  tool_result: "#c9793f",
+  subagent_return: "#4aa3bd",
+  ref_expansion: "#7fa84c",
+  compaction_summary: "#3a9d96",
 };
 
 export function kindColor(kind: string): string {
   const known = KIND_COLORS[kind];
   if (known) return known;
+  // Unbekannte Kinds bekommen eine stabile, gedämpfte Hash-Farbe im selben Register.
   let hash = 0;
   for (let i = 0; i < kind.length; i++) hash = (hash * 31 + kind.charCodeAt(i)) | 0;
-  return `hsl(${Math.abs(hash) % 360} 60% 55%)`;
+  return `hsl(${Math.abs(hash) % 360} 42% 56%)`;
 }
 
 export const WATERMARK_COLORS: Record<string, string> = {
