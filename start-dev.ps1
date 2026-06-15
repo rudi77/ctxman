@@ -24,17 +24,26 @@ sonst antworten Frame-Pop/Archive/Major-GC mit 500.
 .PARAMETER NoBrowser
 Browser am Ende nicht öffnen.
 
+.PARAMETER Stop
+Statt zu starten den kompletten Stack wieder herunterfahren: die Dienste auf
+Mock-/API-/UI-Port (inkl. ihrer Log-Fenster) beenden und den Postgres-Container
+ctxman-pg stoppen. Respektiert -SkipDb (DB läuft weiter) und -NoMock.
+
 .EXAMPLE
 ./start-dev.ps1
+
+.EXAMPLE
+./start-dev.ps1 -Stop
 #>
 [CmdletBinding()]
 param(
     [int]$ApiPort = 5291,
-    [int]$UiPort = 5173,
+    [int]$UiPort = 5174,
     [int]$MockPort = 5999,
     [switch]$SkipDb,
     [switch]$NoMock,
-    [switch]$NoBrowser
+    [switch]$NoBrowser,
+    [switch]$Stop
 )
 
 $ErrorActionPreference = "Stop"
@@ -45,6 +54,27 @@ function Test-PortInUse([int]$Port) {
     [bool](Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue)
 }
 
+function Stop-PortProcess([int]$Port, [string]$Label) {
+    $conns = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue
+    if (-not $conns) {
+        Write-Host "  -> ${Label} (Port ${Port}): nichts aktiv" -ForegroundColor DarkGray
+        return
+    }
+    $pids = $conns | Select-Object -ExpandProperty OwningProcess -Unique
+    foreach ($procId in $pids) {
+        if (-not $procId) { continue }
+        # Das umgebende pwsh-Log-Fenster mit-beenden, damit kein totes Fenster zurückbleibt.
+        $killId = $procId
+        $parentId = (Get-CimInstance Win32_Process -Filter "ProcessId = $procId" -ErrorAction SilentlyContinue).ParentProcessId
+        if ($parentId) {
+            $parent = Get-Process -Id $parentId -ErrorAction SilentlyContinue
+            if ($parent -and $parent.ProcessName -in @("pwsh", "powershell")) { $killId = $parentId }
+        }
+        taskkill /PID $killId /T /F *> $null
+        Write-Host "  -> ${Label} (Port ${Port}): PID ${killId} beendet" -ForegroundColor Green
+    }
+}
+
 function Start-Window([string]$Title, [string]$Command, [string]$WorkingDirectory) {
     Start-Process pwsh -WorkingDirectory $WorkingDirectory -ArgumentList @(
         "-NoExit",
@@ -52,6 +82,30 @@ function Start-Window([string]$Title, [string]$Command, [string]$WorkingDirector
         "`$Host.UI.RawUI.WindowTitle = '$Title'; $Command"
     ) | Out-Null
     Write-Host "  -> gestartet: $Title" -ForegroundColor Green
+}
+
+# --- Stop-Modus -------------------------------------------------------------
+if ($Stop) {
+    Write-Host "=== ctxman Dev-Stack stoppen ===" -ForegroundColor Cyan
+    Stop-PortProcess $UiPort "UI"
+    Stop-PortProcess $ApiPort "API"
+    if (-not $NoMock) { Stop-PortProcess $MockPort "Mock-Backend" }
+
+    if (-not $SkipDb) {
+        Write-Host "Postgres (Container ctxman-pg)" -ForegroundColor Cyan
+        $running = docker ps --filter "name=^ctxman-pg$" --format "{{.Names}}" 2>$null
+        if ($running) {
+            docker stop ctxman-pg | Out-Null
+            Write-Host "  -> Container gestoppt" -ForegroundColor Green
+        }
+        else {
+            Write-Host "  -> Container läuft nicht" -ForegroundColor DarkGray
+        }
+    }
+
+    Write-Host ""
+    Write-Host "Stack gestoppt." -ForegroundColor Cyan
+    return
 }
 
 Write-Host "=== ctxman Dev-Stack ===" -ForegroundColor Cyan

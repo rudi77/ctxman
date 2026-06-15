@@ -434,3 +434,6 @@ FodyWeavers.xsd
 .forge/events.duckdb.wal
 .forge/blobs/
 .forge/logs/
+
+# Playwright-MCP-Artefakte (Browser-Snapshots/Logs aus E2E-Checks)
+.playwright-mcp/
