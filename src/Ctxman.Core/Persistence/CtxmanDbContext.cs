@@ -54,7 +54,11 @@ public sealed class CtxmanDbContext : DbContext
             e.Property(s => s.TenantId).HasColumnName("tenant_id");
             e.Property(s => s.AgentTemplateId).HasColumnName("agent_template_id");
             e.Property(s => s.Policy).HasColumnName("policy").HasConversion(CtxmanValueConverters.PolicyConfig);
-            e.Property(s => s.ContextVersion).HasColumnName("context_version");
+            // Spec §4.4: optimistic concurrency. context_version als EF-Concurrency-Token, damit
+            // ein verlorenes Update (zwei Worker lesen dieselbe Version, beide schreiben) nicht
+            // still durchgeht, sondern als DbUpdateConcurrencyException auffällt — die Endpunkte
+            // übersetzen das in 409. Ohne Token wäre If-Match nur ein check-then-act-Race.
+            e.Property(s => s.ContextVersion).HasColumnName("context_version").IsConcurrencyToken();
             e.Property(s => s.StaticEpoch).HasColumnName("static_epoch");
             e.Property(s => s.CurrentTurn).HasColumnName("current_turn");
             e.Property(s => s.Status).HasColumnName("status").HasConversion(CtxmanValueConverters.SessionStatus);
@@ -108,6 +112,14 @@ public sealed class CtxmanDbContext : DbContext
             e.Property(s => s.Seq).HasColumnName("seq");
             e.Property(s => s.State).HasColumnName("state").HasConversion(CtxmanValueConverters.SegmentState);
 
+            // Spec §7: segments ist append-heavy; jede Query filtert auf session_id (+ tenant_id über
+            // den Query Filter) und der Hot Path berechnet MAX(seq). Ohne Index ⇒ Seq-Scans.
+            // (session_id, seq) deckt MAX(seq) und die seq-sortierte Render-Reihenfolge ab; NICHT
+            // unique, weil ein compaction_summary die seq seines ältesten (soft-deleted) Quell-
+            // Segments übernimmt (Spec §3.3) — seq ist also pro Session nicht kollisionsfrei.
+            e.HasIndex(s => new { s.SessionId, s.Seq });
+            e.HasIndex(s => s.TenantId);
+
             // Spec §10: jede Query tenant-gefiltert.
             e.HasQueryFilter(s => s.TenantId == _tenant.TenantId);
         });
@@ -147,6 +159,10 @@ public sealed class CtxmanDbContext : DbContext
             e.Property(ev => ev.Payload).HasColumnName("payload");
             e.Property(ev => ev.Seq).HasColumnName("seq");
             e.Property(ev => ev.CreatedAt).HasColumnName("created_at");
+
+            // Spec §6: der Event-Feed liest (session_id, seq > after_seq) aufsteigend und der
+            // Outbox-Cursor berechnet MAX(seq) pro Session — Index hält beides indexgestützt.
+            e.HasIndex(ev => new { ev.SessionId, ev.Seq });
 
             // Spec §10: jede Query tenant-gefiltert (Outbox ist append-only, §7/§10).
             e.HasQueryFilter(ev => ev.TenantId == _tenant.TenantId);

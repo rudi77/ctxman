@@ -15,8 +15,9 @@ public sealed class ChannelGcJobQueue : IGcJobQueue
     private readonly Channel<MinorGcJob> _channel =
         Channel.CreateUnbounded<MinorGcJob>(new UnboundedChannelOptions
         {
-            // Genau ein Consumer (der Worker); mehrere Producer (Request-Handler).
-            SingleReader = true,
+            // Mehrere parallele Consumer (MinorGcWorker-Loops, Spec §8) und mehrere Producer
+            // (Request-Handler). Pro-Session-Serialisierung übernimmt der ISessionGcLock.
+            SingleReader = false,
             SingleWriter = false,
         });
 

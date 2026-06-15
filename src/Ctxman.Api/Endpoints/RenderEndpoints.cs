@@ -110,8 +110,12 @@ public static class RenderEndpoints
             return Results.NotFound();
         }
 
+        // Spec §2.2 I3 / §4.5: Render ist der Hot Path. Nur render-eligible Segmente laden
+        // (live | externalized) — evicted/compacted erscheinen nie im Output (RenderPlanner filtert
+        // sie ohnehin) und würden in langen Sessions jeden Render mit Soft-Delete-Ballast belasten.
         var segments = await db.Segments
-            .Where(s => s.SessionId == sessionId)
+            .Where(s => s.SessionId == sessionId
+                && (s.State == SegmentState.Live || s.State == SegmentState.Externalized))
             .ToListAsync(ct);
 
         // Spec §2.5: offene Frames und Tip für Scope-Filter ermitteln.
@@ -259,8 +263,12 @@ public static class RenderEndpoints
                 response,
                 ct);
 
-            await db.SaveChangesAsync(ct);
-            await tx.CommitAsync(ct);
+            // Spec §4.4: Concurrency-Konflikt ⇒ 409; Idempotency-Key-Race ⇒ Replay statt Doppel-Turn.
+            var conflict = await MutationCommit.TryCommitAsync(db, tx, idempotency, idempotencyKey, ct);
+            if (conflict is not null)
+            {
+                return conflict;
+            }
         }
         else
         {
@@ -449,8 +457,12 @@ public static class RenderEndpoints
             response,
             ct);
 
-        await db.SaveChangesAsync(ct);
-        await tx.CommitAsync(ct);
+        // Spec §4.4: Concurrency-Konflikt ⇒ 409; Idempotency-Key-Race ⇒ Replay statt Doppel-Bump.
+        var conflict = await MutationCommit.TryCommitAsync(db, tx, idempotency, idempotencyKey, ct);
+        if (conflict is not null)
+        {
+            return conflict;
+        }
 
         // Spec §6: record static epoch bump.
         metrics.RecordEpochBump();

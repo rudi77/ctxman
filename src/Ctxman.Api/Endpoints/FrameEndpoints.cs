@@ -165,8 +165,12 @@ public static class FrameEndpoints
             response,
             ct);
 
-        await db.SaveChangesAsync(ct);
-        await tx.CommitAsync(ct);
+        // Spec §4.4: Concurrency-Konflikt ⇒ 409; Idempotency-Key-Race ⇒ Replay statt Doppel-Push.
+        var conflict = await MutationCommit.TryCommitAsync(db, tx, idempotency, idempotencyKey, ct);
+        if (conflict is not null)
+        {
+            return conflict;
+        }
 
         return Results.Created($"/v1/sessions/{session.Id}/frames/{frame.Id}", response);
     }
@@ -382,8 +386,12 @@ public static class FrameEndpoints
             response,
             ct);
 
-        await db.SaveChangesAsync(ct);
-        await tx.CommitAsync(ct);
+        // Spec §4.4: Concurrency-Konflikt ⇒ 409; Idempotency-Key-Race ⇒ Replay statt Doppel-Pop.
+        var conflict = await MutationCommit.TryCommitAsync(db, tx, idempotency, idempotencyKey, ct);
+        if (conflict is not null)
+        {
+            return conflict;
+        }
 
         return Results.Ok(response);
     }

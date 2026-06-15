@@ -391,8 +391,12 @@ public static class SessionEndpoints
             new { },
             ct);
 
-        await db.SaveChangesAsync(ct);
-        await tx.CommitAsync(ct);
+        // Spec §4.4: Concurrency-Konflikt ⇒ 409; Idempotency-Key-Race ⇒ Replay statt Doppel-Archiv.
+        var conflict = await MutationCommit.TryCommitAsync(db, tx, idempotency, idempotencyKey, ct);
+        if (conflict is not null)
+        {
+            return conflict;
+        }
 
         // Live-Discovery: Statuswechsel an verbundene SSE-Clients pushen (nach Commit; ein
         // Idempotency-Replay kehrt oben früh zurück und publiziert daher nicht erneut).
