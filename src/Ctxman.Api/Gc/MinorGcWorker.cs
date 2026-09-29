@@ -4,6 +4,7 @@ using Ctxman.Core.Domain;
 using Ctxman.Core.Gc;
 using Ctxman.Core.Persistence;
 using Ctxman.Core.Storage;
+using Ctxman.Core.Tokenization;
 using Microsoft.EntityFrameworkCore;
 
 namespace Ctxman.Api.Gc;
@@ -121,6 +122,7 @@ public sealed class MinorGcWorker : BackgroundService
 
         var db = scope.ServiceProvider.GetRequiredService<CtxmanDbContext>();
         var blobStore = scope.ServiceProvider.GetRequiredService<IBlobStore>();
+        var tokenCounter = scope.ServiceProvider.GetRequiredService<ITokenCounter>();
 
         var session = await db.Sessions.FirstOrDefaultAsync(s => s.Id == job.SessionId, ct);
         if (session is null)
@@ -164,7 +166,10 @@ public sealed class MinorGcWorker : BackgroundService
             var blobRef = await blobStore.Put(
                 job.TenantId, contentStream, "text/plain; charset=utf-8", ct);
 
-            candidate.Segment.Externalize(blobRef, candidate.Summary);
+            // Token-Basis nach der Externalisierung ist die summary (Render-Ersatz) — sonst sinkt
+            // tokens_total nie und die Watermark bleibt stehen (siehe Segment.Externalize).
+            candidate.Segment.Externalize(
+                blobRef, candidate.Summary, tokenCounter.Count(candidate.Summary ?? string.Empty));
 
             events.Add(CreateEvent(job, "segment_externalized", new
             {

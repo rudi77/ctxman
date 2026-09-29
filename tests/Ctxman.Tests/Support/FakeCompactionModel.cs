@@ -46,6 +46,12 @@ public sealed class FakeCompactionModel : ICompactionModel
     /// </summary>
     public Exception? ThrowOnPromotion { get; set; }
 
+    /// <summary>
+    /// Wenn true, gibt der COMPACTION-Aufruf (nicht die Promotion) einen leeren String zurück —
+    /// testet, dass ein leeres Summary die Quellen NICHT kompaktiert. Default: false.
+    /// </summary>
+    public bool EmptyCompactionResult { get; set; }
+
     public async Task<CompactionResult> SummarizeAsync(CompactionRequest request, CancellationToken ct)
     {
         _received.Add(request);
@@ -72,6 +78,11 @@ public sealed class FakeCompactionModel : ICompactionModel
         if (hook is not null)
         {
             await hook(request);
+        }
+
+        if (EmptyCompactionResult)
+        {
+            return new CompactionResult(string.Empty);
         }
 
         return new CompactionResult(

@@ -1,3 +1,5 @@
+using Ctxman.Core.Domain;
+
 namespace Ctxman.Core.Compaction;
 
 /// <summary>
@@ -5,9 +7,24 @@ namespace Ctxman.Core.Compaction;
 /// </summary>
 /// <param name="Content">Segment-Inhalt oder Summary (nie null/leer — Aufrufer filtert evicted).</param>
 /// <param name="Kind">Offenes Vokabular (Spec §2.2), z. B. "assistant_msg". Dient dem Prompt als Kontext-Hinweis.</param>
+/// <param name="Source">
+/// Logische Herkunft (Spec §2.2) — bei <c>tool_call</c> der Tool-Name. Ohne ihn sieht das
+/// Compaction-Modell von einem Tool-Aufruf nur die Argumente, und die Zusammenfassung erfährt
+/// nie, WELCHES Werkzeug lief (welche Datei geschrieben, welcher Befehl ausgeführt wurde).
+/// </param>
 public sealed record WindowItem(
     string Content,
-    string? Kind = null);
+    string? Kind = null,
+    string? Source = null)
+{
+    /// <summary>
+    /// Fenster-Element aus einem Segment (Spec §3.3). Externalisierte Segmente steuern ihre
+    /// summary bei — ihr Inhalt liegt im Blob Store, nicht im Segment. Gemeinsame Grundlage von
+    /// Compaction und Promotion, damit beide Aufrufe dasselbe Fenster sehen.
+    /// </summary>
+    public static WindowItem From(Segment segment) =>
+        new(segment.Content ?? segment.Summary ?? string.Empty, segment.Kind, segment.Source);
+}
 
 /// <summary>
 /// Eingabe für <see cref="ICompactionModel.SummarizeAsync"/>. Trägt das Segment-Fenster, das

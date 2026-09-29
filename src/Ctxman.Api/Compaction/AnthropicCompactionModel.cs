@@ -33,8 +33,8 @@ public sealed class AnthropicCompactionModel : ICompactionModel
     /// <inheritdoc/>
     public async Task<CompactionResult> SummarizeAsync(CompactionRequest request, CancellationToken ct)
     {
-        var systemPrompt = ResolveSystemPrompt(request.PromptTemplateId);
-        var userContent = BuildUserContent(request.Window);
+        var systemPrompt = CompactionPrompts.SystemPrompt(request.PromptTemplateId);
+        var userContent = CompactionPrompts.UserContent(request.Window);
 
         var body = new AnthropicRequest(
             Model: request.Model,
@@ -59,29 +59,20 @@ public sealed class AnthropicCompactionModel : ICompactionModel
 
         var result = await response.Content.ReadFromJsonAsync<AnthropicResponse>(WireOptions, ct);
 
+        // Ein bei max_tokens abgeschnittenes Summary ist kein Summary: die Compaction ersetzte
+        // die Quellen durch einen Text ohne Ende, eine Fact-Extraction verlöre die hinteren
+        // Fakten. Spec §3.1: lieber ein expliziter, retrybarer Fehler als ein lossy Notabwurf.
+        if (result?.StopReason == "max_tokens")
+        {
+            throw new InvalidOperationException(
+                $"Compaction-Antwort bei max_tokens={_options.MaxTokens} abgeschnitten " +
+                $"(Template {request.PromptTemplateId}) — Compaction:Anthropic:MaxTokens erhöhen.");
+        }
+
         var summary = result?.Content?.FirstOrDefault(b => b.Type == "text")?.Text
             ?? string.Empty;
 
         return new CompactionResult(summary);
-    }
-
-    private static string ResolveSystemPrompt(string templateId) => templateId switch
-    {
-        // Minimale Built-in-Templates — Spec §8 verlangt keine spezifische Template-Registry.
-        "fact-extraction-v1" =>
-            "Extract the key facts and decisions from the conversation below as a concise bulleted list.",
-        _ => // "default-v1" und alle anderen
-            "Summarize the following conversation segments concisely, preserving all essential context.",
-    };
-
-    private static string BuildUserContent(IReadOnlyList<WindowItem> window)
-    {
-        var parts = window.Select(item =>
-            item.Kind is not null
-                ? $"[{item.Kind}]\n{item.Content}"
-                : item.Content);
-
-        return string.Join("\n\n---\n\n", parts);
     }
 
     // --- Wire-Typen (Anthropic Messages API) ---
@@ -97,7 +88,8 @@ public sealed class AnthropicCompactionModel : ICompactionModel
         string Content);
 
     private sealed record AnthropicResponse(
-        IReadOnlyList<AnthropicContentBlock>? Content);
+        IReadOnlyList<AnthropicContentBlock>? Content,
+        string? StopReason = null);
 
     private sealed record AnthropicContentBlock(
         string Type,

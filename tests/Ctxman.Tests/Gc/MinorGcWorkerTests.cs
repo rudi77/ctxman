@@ -8,6 +8,7 @@ using Ctxman.Core.Storage;
 using Ctxman.Tests.Support;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Ctxman.Core.Tokenization;
 
 namespace Ctxman.Tests.Gc;
 
@@ -191,5 +192,39 @@ public sealed class MinorGcWorkerTests
                 && (ev.Type == "segment_externalized" || ev.Type == "segment_evicted" || ev.Type == "unit_evicted"))
             .CountAsync();
         Assert.Equal(0, gcEvents);
+    }
+
+    // Port-Rückfluss V1 (Spec §3.2.2): nach der Externalisierung zählt das Segment nur noch die
+    // summary. Ohne das blieb tokens_total nach jedem Minor GC unverändert — die Watermark fiel
+    // nie, der nächste Render meldete wieder "soft", und Budgetdruck ließ sich nur noch
+    // verlustbehaftet abbauen.
+    [Fact]
+    public async Task MinorGc_Externalization_ReplacesTokenCount_WithSummaryCount()
+    {
+        await using var factory = new CtxmanWebAppFactory();
+        Wp4Fixtures.EnsureHost(factory);
+
+        var session = Wp4Fixtures.NewSession(Tenant, Wp4Fixtures.SmallBudgetPolicy(budgetTokens: 1_000_000));
+        var segment = Wp4Fixtures.LiveWorking(
+            session.Id, Tenant, kind: "tool_result", tokens: 10_000,
+            content: new string('x', 40_000), role: Role.Tool);
+
+        using (var db = factory.CreateDbContext(Tenant))
+        {
+            db.Sessions.Add(session);
+            db.Segments.Add(segment);
+            await db.SaveChangesAsync();
+        }
+
+        Queue(factory).Enqueue(new MinorGcJob(Tenant, session.Id, Ulid.NewUlid(), GcLevel.Minor));
+        await Queue(factory).WaitForIdleAsync();
+
+        using var verify = factory.CreateDbContext(Tenant);
+        var persisted = await verify.Segments.AsNoTracking().SingleAsync(s => s.Id == segment.Id);
+        var counter = factory.Services.GetRequiredService<ITokenCounter>();
+
+        Assert.Equal(SegmentState.Externalized, persisted.State);
+        Assert.Equal(counter.Count(persisted.Summary!), persisted.Tokens);
+        Assert.True(persisted.Tokens < 100, $"Token-Basis nicht gesunken: {persisted.Tokens}");
     }
 }

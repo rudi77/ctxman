@@ -29,10 +29,11 @@ public sealed record CompactionPlan(
 
 /// <summary>
 /// Deterministische, I/O-freie Major Collection (Spec §3.3 Schritt 2).
-/// Berechnet das Compaction-Fenster aus allen nicht-gepinnten, nicht-static, Live Working-
-/// Segmenten — sortiert nach <see cref="Segment.Seq"/> aufsteigend (älteste→jüngste).
-/// Akkumuliert Token-Counts, bis das nächste Segment <c>max_share × BudgetTokens</c>
-/// überschreiten würde; dort stoppt das Fenster. Kein I/O, keine Mutationen.
+/// Berechnet das Compaction-Fenster aus allen nicht-gepinnten Working-<b>Units</b> (Spec §3.3:
+/// „alle nicht gepinnten Working-Units, von alt nach jung") — sortiert nach
+/// <see cref="Segment.Seq"/> aufsteigend. Akkumuliert Token-Counts, bis die nächste Unit
+/// <c>max_share × BudgetTokens</c> überschreiten würde; dort stoppt das Fenster.
+/// Kein I/O, keine Mutationen.
 /// </summary>
 public static class MajorCollector
 {
@@ -42,8 +43,14 @@ public static class MajorCollector
     /// Selektions-Invarianten:
     /// <list type="bullet">
     ///   <item><see cref="Region.Working"/> — Static-Region ausgenommen (Spec §2.2 I1).</item>
-    ///   <item><see cref="SegmentState.Live"/> — compacted/evicted/externalized sind raus.</item>
-    ///   <item>Nicht gepinnt — Spec §2.2 I1 / §3.3.</item>
+    ///   <item>Render-eligible (<see cref="SegmentState.Live"/> | <see cref="SegmentState.Externalized"/>)
+    ///   — compacted/evicted sind raus. Externalisierte Segmente MÜSSEN mit ins Unit-Grouping:
+    ///   sonst fiele ein externalisiertes tool_result aus seiner Unit, der live tool_call würde
+    ///   allein kompaktiert und das Result verwaiste im Render (<c>role: tool</c> ohne Aufruf —
+    ///   der Provider lehnt den ganzen Request ab; I5 meldet nur die Gegenrichtung). Ihr
+    ///   Fenster-Beitrag ist die summary.</item>
+    ///   <item>Nicht gepinnt — auf UNIT-Ebene (Spec §2.2 I1 / §3.3): ein gepinntes Segment schützt
+    ///   seine ganze Unit, sonst entstünde derselbe Orphan über den Pin.</item>
     /// </list>
     /// Akkumulations-Abbruch: Hinzufügen der nächsten Unit würde
     /// <c>max_share × BudgetTokens</c> überschreiten → stopp (Spec §3.3).
@@ -65,20 +72,22 @@ public static class MajorCollector
         ArgumentNullException.ThrowIfNull(segments);
         ArgumentNullException.ThrowIfNull(policy);
 
-        // Spec §3.3: Compaction-Fenster = alle NON-PINNED Working-region Segmente,
-        // nur Live-State. Static und gepinnt ausgeschlossen (I1).
-        // compacted/evicted/externalized nicht berücksichtigt.
+        // Spec §3.3: Compaction-Fenster = render-eligible Working-Segmente (live UND
+        // externalisiert); Static ausgeschlossen (I1), compacted/evicted nicht berücksichtigt.
+        // Pins werden NICHT hier gefiltert, sondern erst auf Unit-Ebene (s. u.).
         var candidates = segments
             .Where(s =>
                 s.Region == Region.Working
-                && s.State == SegmentState.Live
-                && !s.Pinned)
+                && s.State is SegmentState.Live or SegmentState.Externalized)
             .OrderBy(s => s.Seq)
             .ToList();
 
         // Spec §2.4: Segmente in Units gruppieren — gekoppelte tool_call+tool_result-Paare
-        // bilden eine Unit und werden atomar behandelt. // Spec §2.4
-        var units = UnitGrouping.GroupIntoUnits(candidates);
+        // bilden eine Unit und werden atomar behandelt. Eine Unit mit mindestens einem
+        // gepinnten Segment fällt als Ganzes heraus (Spec §3.3: „nicht gepinnte Working-Units").
+        var units = UnitGrouping.GroupIntoUnits(candidates)
+            .Where(u => u.Segments.All(s => !s.Pinned))
+            .ToList();
 
         // Spec §3.3 / §2.4: Tokenbudget-Obergrenze = max_share × BudgetTokens.
         // Akkumulieren UNIT BY UNIT — eine Unit wird ganz aufgenommen oder gar nicht. // Spec §2.4

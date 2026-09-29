@@ -38,7 +38,7 @@ public sealed class SegmentInvariantTests
     public void Externalize_OnStaticSegment_Throws()
     {
         var seg = StaticSegment();
-        Assert.Throws<StaticRegionImmutableException>(() => seg.Externalize(SampleBlob(), "summary"));
+        Assert.Throws<StaticRegionImmutableException>(() => seg.Externalize(SampleBlob(), "summary", tokens: 2));
     }
 
     [Fact] // Spec §2.2 I1
@@ -244,5 +244,36 @@ public sealed class SegmentInvariantTests
         Assert.Equal(SegmentState.Evicted, seg.State);
         Assert.NotNull(seg.BlobRef);
         Assert.Equal("keep", seg.Summary);
+    }
+
+    // Port-Rückfluss V1 (Spec §3.2.2): Externalisierung ersetzt die Token-Basis durch die der
+    // summary. Sonst bliebe der Zählwert des vollen Inhalts stehen, tokens_total sänke nie, und
+    // die verlustfreie GC-Stufe gäbe kein Budget zurück.
+    [Fact]
+    public void Externalize_ReplacesTokenCount_WithSummaryCount()
+    {
+        var seg = Segment.CreateLive(
+            id: Ulid.NewUlid(),
+            sessionId: Ulid.NewUlid(),
+            tenantId: "t",
+            region: Region.Working,
+            kind: "tool_result",
+            role: Role.Tool,
+            content: new string('x', 40_000),
+            seq: 1,
+            createdTurn: 0,
+            tokens: 10_000);
+
+        seg.Externalize(SampleBlob(), "kurz", tokens: 1);
+
+        Assert.Equal(1, seg.Tokens);
+        Assert.Equal(SegmentState.Externalized, seg.State);
+    }
+
+    [Fact]
+    public void Externalize_RejectsNegativeTokenCount()
+    {
+        var seg = WorkingSegment();
+        Assert.Throws<ArgumentOutOfRangeException>(() => seg.Externalize(SampleBlob(), "s", tokens: -1));
     }
 }

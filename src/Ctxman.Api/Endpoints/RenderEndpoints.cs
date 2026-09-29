@@ -363,6 +363,7 @@ public static class RenderEndpoints
             working,
             diff,
             blobStore,
+            tokenCounter,
             tenant.TenantId,
             ct);
 
