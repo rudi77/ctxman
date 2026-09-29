@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Ctxman.Core.Domain;
 using Ctxman.Core.Storage;
+using Ctxman.Core.Tokenization;
 
 namespace Ctxman.Core.Rendering;
 
@@ -39,6 +40,7 @@ public static class StaticRegionDiff
         IReadOnlyList<Segment> workingSegments,
         StaticRegionDiffResult diff,
         IBlobStore blobStore,
+        ITokenCounter tokenCounter,
         string tenantId,
         CancellationToken ct)
     {
@@ -96,7 +98,7 @@ public static class StaticRegionDiff
                         continue;
                     }
 
-                    await ExternalizeSegmentAsync(segment, blobStore, tenantId, ct);
+                    await ExternalizeSegmentAsync(segment, blobStore, tokenCounter, tenantId, ct);
                 }
 
                 return;
@@ -122,6 +124,7 @@ public static class StaticRegionDiff
     private static async Task ExternalizeSegmentAsync(
         Segment segment,
         IBlobStore blobStore,
+        ITokenCounter tokenCounter,
         string tenantId,
         CancellationToken ct)
     {
@@ -129,7 +132,7 @@ public static class StaticRegionDiff
         await using var stream = new MemoryStream(System.Text.Encoding.UTF8.GetBytes(content));
         var blobRef = await blobStore.Put(tenantId, stream, "text/plain", ct);
         var summary = content.Length <= 200 ? content : content[..200] + "…";
-        segment.Externalize(blobRef, summary);
+        segment.Externalize(blobRef, summary, tokenCounter.Count(summary));
     }
 
     private static HashSet<string> ExtractToolNames(IReadOnlyList<Segment> segments) =>

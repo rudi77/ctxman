@@ -115,8 +115,12 @@ public sealed class Segment
     /// <summary>Zuletzt referenzierter Turn; Basis für TTL-Liveness (Spec §2.2 / §3.2). Nur via Guard.</summary>
     public int LastReferencedTurn { get; private set; }
 
-    /// <summary>Gezählt beim Append, Tokenizer konfigurierbar (Spec §2.2).</summary>
-    public int Tokens { get; }
+    /// <summary>
+    /// Gezählt beim Append, Tokenizer konfigurierbar (Spec §2.2). Ändert sich nur bei der
+    /// Externalisierung (<see cref="Externalize"/>): dann ist die summary Render-Ersatz UND
+    /// Token-Basis.
+    /// </summary>
+    public int Tokens { get; private set; }
 
     /// <summary>Globale, stabile Render-Reihenfolge innerhalb der Session (Spec §2.2 / I4).</summary>
     public long Seq { get; }
@@ -218,14 +222,25 @@ public sealed class Segment
     /// Blob Store, content := null, blob_ref := ref, summary := summary, state := externalized.
     /// Da blob_ref gesetzt wird, bleibt I2 (§2.2) gewahrt. I1 (§2.2): auf Static-Segmenten verboten.
     /// </summary>
-    public void Externalize(BlobRef blobRef, string? summary)
+    /// <param name="blobRef">Pointer auf den soeben geschriebenen Blob.</param>
+    /// <param name="summary">Render-Ersatz des Inhalts (Spec §2.4: summary + Ref-Hinweis).</param>
+    /// <param name="tokens">
+    /// Token-Zählung der <paramref name="summary"/>. Pflicht, weil <c>tokens_total</c> die Summe
+    /// der Segment-Tokens ist (RenderPlanner): bliebe der Zählwert des vollen Inhalts stehen,
+    /// sänke die Watermark durch Externalisierung nie — die verlustfreie GC-Stufe (Spec §3.2)
+    /// gäbe dann kein Budget zurück, und Budgetdruck ließe sich nur noch verlustbehaftet
+    /// (Eviction, Compaction) abbauen.
+    /// </param>
+    public void Externalize(BlobRef blobRef, string? summary, int tokens)
     {
         ArgumentNullException.ThrowIfNull(blobRef);
+        ArgumentOutOfRangeException.ThrowIfNegative(tokens);
         GuardNotStatic(); // Spec §2.2 I1
 
         Content = null;
         BlobRef = blobRef;
         Summary = summary;
+        Tokens = tokens;
         State = SegmentState.Externalized;
         // I2 bleibt gewahrt: blob_ref != null.
     }

@@ -5,6 +5,7 @@ using Ctxman.Core;
 using Ctxman.Core.Auth;
 using Ctxman.Core.Domain;
 using Ctxman.Core.Persistence;
+using Ctxman.Core.Tokenization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 
@@ -184,6 +185,7 @@ public static class FrameEndpoints
         ITenantContext tenant,
         IdempotencyService idempotency,
         PromotionService promotionService,
+        ITokenCounter tokenCounter,
         ILoggerFactory loggerFactory,
         CancellationToken ct)
     {
@@ -324,7 +326,11 @@ public static class FrameEndpoints
             content: request.ReturnContent,
             seq: nextSegSeq,
             createdTurn: session.CurrentTurn,
-            frameId: frame.ParentFrameId); // null = Root-Frame (Spec §2.5)
+            frameId: frame.ParentFrameId, // null = Root-Frame (Spec §2.5)
+            // Spec §2.2: tokens wird beim Anlegen gezählt. Ohne Zählung (Default 0) belastete
+            // ein Sub-Agent-Ergebnis beliebiger Größe nie das Budget, und die Watermark
+            // unterschätzte den Verbrauch in Sessions mit vielen Frames systematisch.
+            tokens: tokenCounter.Count(request.ReturnContent));
 
         db.Segments.Add(returnSegment);
 

@@ -6,6 +6,7 @@ using Ctxman.Core.Rendering;
 using Ctxman.Tests.Support;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Ctxman.Core.Tokenization;
 
 namespace Ctxman.Tests.Endpoints;
 
@@ -772,5 +773,34 @@ public sealed class FrameEndpointsTests
         var returnSeg = await db.Segments.AsNoTracking()
             .FirstAsync(s => s.Id == Ulid.Parse(returnSegId));
         Assert.Equal("subagent_return", returnSeg.Kind);
+    }
+
+    // Port-Rückfluss V4 (Spec §2.2): tokens wird beim Anlegen gezählt — auch für das
+    // Return-Segment eines Frame-Pops. Mit dem Default 0 belastete ein Sub-Agent-Ergebnis
+    // beliebiger Größe nie das Budget, und die Watermark unterschätzte den Verbrauch.
+    [Fact]
+    public async Task Pop_ReturnSegment_CountsTokens()
+    {
+        using var factory = new CtxmanWebAppFactory();
+        var client = ClientFor(factory);
+        var sid = await CreateSessionAsync(client);
+
+        var pushResp = await client.SendAsync(PushFrame(sid, "tokens-frame", "push-tokens-1"));
+        pushResp.EnsureSuccessStatusCode();
+        var frameId = (await pushResp.Content.ReadFromJsonAsync<JsonElement>())
+            .GetProperty("frame_id").GetString()!;
+
+        var returnContent = new string('r', 4000);
+        var popResp = await client.SendAsync(PopFrame(sid, frameId, returnContent, "pop-tokens-1"));
+        popResp.EnsureSuccessStatusCode();
+        var returnSegId = Ulid.Parse((await popResp.Content.ReadFromJsonAsync<JsonElement>())
+            .GetProperty("return_segment_id").GetString()!);
+
+        using var db = factory.CreateDbContext(Tenant);
+        var returnSeg = await db.Segments.AsNoTracking().SingleAsync(s => s.Id == returnSegId);
+        var counter = factory.Services.GetRequiredService<ITokenCounter>();
+
+        Assert.Equal(counter.Count(returnContent), returnSeg.Tokens);
+        Assert.True(returnSeg.Tokens > 0);
     }
 }

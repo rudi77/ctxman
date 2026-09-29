@@ -7,6 +7,7 @@ using Ctxman.Core.Gc;
 using Ctxman.Tests.Support;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Ctxman.Core.Rendering;
 
 namespace Ctxman.Tests.Gc;
 
@@ -628,5 +629,58 @@ public sealed class MajorGcWorkerTests
         var compactionCalls = fake.RequestsForTemplate("default-v1").Count();
         Assert.Equal(1, factExtractionCalls);
         Assert.Equal(1, compactionCalls);
+    }
+
+    // Port-Rückfluss V3 (Spec §3.3): die Zusammenfassung muss das Modell auch ERREICHEN.
+    // Mit role: null übersprang RenderPlanner.Coalesce das compaction_summary-Segment als
+    // „nicht message-render-fähig" — die Quellen waren compacted, die Zusammenfassung
+    // unsichtbar, und die Major Collection war de facto reine Löschung.
+    [Fact]
+    public async Task MajorGc_CompactionSummary_IsRenderedToTheModel()
+    {
+        await using var factory = new CtxmanWebAppFactory();
+        var client = ClientFor(factory);
+        var session = await SeedSessionWithSegments(factory, segmentCount: 3);
+
+        var response = await client.PostAsJsonAsync($"/v1/sessions/{session.Id}/gc", new { level = "major" });
+        Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
+        await Queue(factory).WaitForIdleAsync();
+
+        using var verify = factory.CreateDbContext(Tenant);
+        var persistedSession = await verify.Sessions.AsNoTracking().SingleAsync(s => s.Id == session.Id);
+        var segments = await verify.Segments.AsNoTracking()
+            .Where(s => s.SessionId == session.Id).ToListAsync();
+
+        var summary = Assert.Single(segments, s => s.Kind == "compaction_summary");
+        Assert.NotNull(summary.Role);
+
+        var plan = RenderPlanner.Plan(persistedSession, segments, persistedSession.Policy);
+        var texts = plan.Model.Messages.SelectMany(m => m.Blocks).Select(b => b.Text ?? string.Empty);
+        Assert.Contains(texts, t => t.StartsWith("SUMMARY:", StringComparison.Ordinal));
+    }
+
+    // Lehre aus agentkit (Kompaktierung, Commit 5d7a8b3): ein leeres Summary ist ein gescheiterter
+    // Aufruf, keine Zusammenfassung. Vorher wurden alle Fenster-Segmente compacted und durch ein
+    // LEERES Segment ersetzt — die Major Collection war dann reine Löschung.
+    [Fact]
+    public async Task MajorGc_EmptyCompactionSummary_LeavesSourcesUntouched()
+    {
+        await using var factory = new CtxmanWebAppFactory();
+        var client = ClientFor(factory);
+        var session = await SeedSessionWithSegments(factory, segmentCount: 3);
+        FakeCompaction(factory).EmptyCompactionResult = true;
+
+        var response = await client.PostAsJsonAsync($"/v1/sessions/{session.Id}/gc", new { level = "major" });
+        Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
+        await Queue(factory).WaitForIdleAsync();
+
+        using var verify = factory.CreateDbContext(Tenant);
+        var segments = await verify.Segments.AsNoTracking()
+            .Where(s => s.SessionId == session.Id).ToListAsync();
+
+        Assert.DoesNotContain(segments, s => s.Kind == "compaction_summary");
+        Assert.All(segments, s => Assert.Equal(SegmentState.Live, s.State));
+        Assert.False(await verify.Events.AsNoTracking()
+            .AnyAsync(e => e.SessionId == session.Id && e.Type == "compaction_completed"));
     }
 }

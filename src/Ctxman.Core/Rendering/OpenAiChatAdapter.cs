@@ -50,6 +50,8 @@ public sealed class OpenAiChatAdapter : IProviderAdapter
             messages.AddRange(BuildMessages(message));
         }
 
+        messages = PairToolResponses(messages);
+
         var requestFragment = new Dictionary<string, object?>
         {
             ["tools"] = tools,
@@ -107,6 +109,85 @@ public sealed class OpenAiChatAdapter : IProviderAdapter
 
         yield return msg;
     }
+
+    /// <summary>
+    /// Stellt die Ordnungszusicherung der OpenAI-API her: auf eine Assistant-Nachricht mit
+    /// <c>tool_calls</c> folgen UNMITTELBAR die <c>role: tool</c>-Antworten zu jeder
+    /// <c>tool_call_id</c> — sonst lehnt der Provider den ganzen Request ab („An assistant
+    /// message with 'tool_calls' must be followed by tool messages responding to each
+    /// 'tool_call_id'").
+    ///
+    /// Der Planer sortiert Working-Segmente strikt nach <c>seq</c> (I4). Das genügt, solange eine
+    /// Antwort direkt nach ihrem Aufruf entsteht — nicht aber, wenn sie nachgereicht wird. Genau
+    /// das verlangt I5 vom Client-SDK: offene Units einer deaktivierten Quelle mit einem
+    /// synthetischen Error-<c>tool_result</c> schließen. Das bekommt die höchste <c>seq</c> und
+    /// stünde hinter allem, was inzwischen angehängt wurde. Im Rust-Port kostete dieser Fall
+    /// 10 von 64 Benchmark-Tasks — jedes Mal ein Totalausfall, kein schlechteres Ergebnis.
+    ///
+    /// Die Zusicherung gehört in den Adapter, nicht in den Planer: sie ist eine Eigenheit des
+    /// Wire-Formats (Spec §4.6 — wie das Coalescing Teil der Render-Garantie, nicht Kür).
+    /// Im Normalfall (Antwort folgt ohnehin direkt) ist die Ausgabe unverändert. Verlustfrei:
+    /// eine Antwort ohne zugehörigen Aufruf bleibt an ihrem Platz, statt verworfen zu werden.
+    /// </summary>
+    private static List<Dictionary<string, object?>> PairToolResponses(
+        List<Dictionary<string, object?>> messages)
+    {
+        var called = messages
+            .SelectMany(ToolCallIds)
+            .ToHashSet(StringComparer.Ordinal);
+
+        // Zugeordnete Antworten einsammeln; ihre Reihenfolge untereinander bleibt erhalten.
+        var answers = new Dictionary<string, List<Dictionary<string, object?>>>(StringComparer.Ordinal);
+        foreach (var message in messages)
+        {
+            if (AnsweredCallId(message, called) is { } id)
+            {
+                if (!answers.TryGetValue(id, out var bucket))
+                {
+                    bucket = new List<Dictionary<string, object?>>();
+                    answers[id] = bucket;
+                }
+
+                bucket.Add(message);
+            }
+        }
+
+        var paired = new List<Dictionary<string, object?>>(messages.Count);
+        foreach (var message in messages)
+        {
+            // Zugeordnete Antworten kommen gleich hinter ihren Aufruf; verwaiste bleiben stehen.
+            if (AnsweredCallId(message, called) is not null)
+            {
+                continue;
+            }
+
+            paired.Add(message);
+
+            foreach (var id in ToolCallIds(message))
+            {
+                if (answers.Remove(id, out var bucket))
+                {
+                    paired.AddRange(bucket);
+                }
+            }
+        }
+
+        return paired;
+    }
+
+    private static IEnumerable<string> ToolCallIds(Dictionary<string, object?> message) =>
+        message.TryGetValue("tool_calls", out var value)
+        && value is IEnumerable<Dictionary<string, object?>> calls
+            ? calls.Select(c => c.GetValueOrDefault("id") as string).OfType<string>()
+            : [];
+
+    /// <summary>tool_call_id einer <c>role: tool</c>-Nachricht, deren Aufruf im Verlauf steht; sonst null.</summary>
+    private static string? AnsweredCallId(Dictionary<string, object?> message, HashSet<string> called) =>
+        message.GetValueOrDefault("role") as string == "tool"
+        && message.GetValueOrDefault("tool_call_id") is string id
+        && called.Contains(id)
+            ? id
+            : null;
 
     private static Dictionary<string, object?> BuildToolCall(RenderContentBlock block) => new()
     {

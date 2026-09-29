@@ -126,4 +126,97 @@ public sealed class ProviderAdapterTests
         var assistant = messages.EnumerateArray().First(m => m.GetProperty("role").GetString() == "assistant");
         Assert.Equal(2, assistant.GetProperty("content").GetArrayLength());
     }
+
+    // ---- Port-Rückfluss V5: Tool-Paarung im Adapter ----
+
+    /// <summary>
+    /// Die Lage, in der ein Ergebnis NACHGEREICHT wird: Aufruf, dazwischen anderer Verkehr, dann
+    /// erst die Antwort — typisch für das synthetische Error-tool_result, mit dem das SDK laut I5
+    /// offene Units schließt. Nach seq sortiert steht die Antwort hinter dem Zwischenverkehr.
+    /// </summary>
+    private static RenderModel LateResultModel() => new(
+        StaticItems: [],
+        Messages:
+        [
+            new(Role.User, [new RenderContentBlock(RenderBlockKind.Text, "los", null, null)]),
+            new(Role.Assistant, [new RenderContentBlock(RenderBlockKind.ToolCall, "{}", "c1", "run_shell")]),
+            new(Role.User, [new RenderContentBlock(RenderBlockKind.Text, "und weiter", null, null)]),
+            new(Role.Tool, [new RenderContentBlock(RenderBlockKind.ToolResult, "(tool no longer available)", "c1", null)]),
+        ],
+        EmitExpandContextRef: false,
+        TokensTotal: 0);
+
+    private static JsonElement Messages(RenderResult result)
+    {
+        using var doc = JsonDocument.Parse(CanonicalJson.Serialize(result.RequestFragment));
+        return doc.RootElement.GetProperty("messages").Clone();
+    }
+
+    [Fact] // OpenAI: auf tool_calls folgt UNMITTELBAR die role:tool-Antwort.
+    public void OpenAi_LateToolResult_DirectlyFollowsItsCall()
+    {
+        var messages = Messages(new OpenAiChatAdapter().Render(LateResultModel()));
+
+        var callIndex = Enumerable.Range(0, messages.GetArrayLength())
+            .Single(i => messages[i].TryGetProperty("tool_calls", out _));
+        var next = messages[callIndex + 1];
+
+        Assert.Equal("tool", next.GetProperty("role").GetString());
+        Assert.Equal("c1", next.GetProperty("tool_call_id").GetString());
+        // Verlustfrei: nichts fällt weg, der Zwischenverkehr steht danach.
+        Assert.Equal(4, messages.GetArrayLength());
+        Assert.Equal("und weiter", messages[callIndex + 2].GetProperty("content").GetString());
+    }
+
+    [Fact] // Anthropic: tool_result in der UNMITTELBAR folgenden Nachricht.
+    public void Anthropic_LateToolResult_IsInTheNextMessage()
+    {
+        var messages = Messages(new AnthropicMessagesAdapter().Render(LateResultModel()));
+
+        var callIndex = Enumerable.Range(0, messages.GetArrayLength())
+            .Single(i => messages[i].GetProperty("content").EnumerateArray()
+                .Any(b => b.GetProperty("type").GetString() == "tool_use"));
+        var next = messages[callIndex + 1];
+
+        Assert.Equal("user", next.GetProperty("role").GetString());
+        var first = next.GetProperty("content")[0];
+        Assert.Equal("tool_result", first.GetProperty("type").GetString());
+        Assert.Equal("c1", first.GetProperty("tool_use_id").GetString());
+        Assert.Equal(4, messages.GetArrayLength());
+    }
+
+    [Fact] // Normalfall: folgt die Antwort ohnehin direkt, ist die Ausgabe byte-gleich.
+    public void Pairing_LeavesAlreadyPairedOutputUnchanged()
+    {
+        // SampleModel hat Aufruf und Antwort bereits direkt hintereinander.
+        var openAi = CanonicalJson.Serialize(new OpenAiChatAdapter().Render(SampleModel()).RequestFragment);
+        var anthropic = CanonicalJson.Serialize(new AnthropicMessagesAdapter().Render(SampleModel()).RequestFragment);
+
+        var openAiMessages = JsonDocument.Parse(openAi).RootElement.GetProperty("messages");
+        Assert.Equal(new[] { "system", "user", "assistant", "tool" },
+            openAiMessages.EnumerateArray().Select(m => m.GetProperty("role").GetString()));
+
+        var anthropicMessages = JsonDocument.Parse(anthropic).RootElement.GetProperty("messages");
+        Assert.Equal(new[] { "user", "assistant", "user" },
+            anthropicMessages.EnumerateArray().Select(m => m.GetProperty("role").GetString()));
+    }
+
+    [Fact] // Verlustfrei: eine Antwort ohne zugehörigen Aufruf bleibt stehen, statt zu verschwinden.
+    public void OpenAi_ToolResultWithoutCall_StaysInPlace()
+    {
+        var model = new RenderModel(
+            StaticItems: [],
+            Messages:
+            [
+                new(Role.User, [new RenderContentBlock(RenderBlockKind.Text, "hi", null, null)]),
+                new(Role.Tool, [new RenderContentBlock(RenderBlockKind.ToolResult, "alt", "weg", null)]),
+            ],
+            EmitExpandContextRef: false,
+            TokensTotal: 0);
+
+        var messages = Messages(new OpenAiChatAdapter().Render(model));
+
+        Assert.Equal(2, messages.GetArrayLength());
+        Assert.Equal("weg", messages[1].GetProperty("tool_call_id").GetString());
+    }
 }

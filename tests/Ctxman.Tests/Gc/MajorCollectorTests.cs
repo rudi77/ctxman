@@ -313,4 +313,54 @@ public sealed class MajorCollectorTests
         var seqs = plan.SourceSegments.Select(s => s.Seq).ToList();
         Assert.Equal(seqs.OrderBy(x => x).ToList(), seqs);
     }
+
+    // Port-Rückfluss V2 (Spec §3.3 / §2.4): das Fenster besteht aus Working-UNITS. Filterte es
+    // (wie früher) auf Live, fiele ein externalisiertes tool_result aus seiner Unit, der live
+    // tool_call würde allein kompaktiert, und das Result verwaiste im Render — ein role:tool
+    // ohne Aufruf, den der Provider mit dem ganzen Request ablehnt.
+    [Fact]
+    public void PlanCompaction_ExternalizedToolResult_StaysWithItsCall()
+    {
+        var sessionId = Ulid.NewUlid();
+        var policy = PolicyConfig.Default() with { BudgetTokens = 100_000 };
+
+        var call = Segment.CreateLive(
+            Ulid.NewUlid(), sessionId, "t", Region.Working, "tool_call", Role.Assistant,
+            content: "{}", seq: 1, createdTurn: 0, toolCallId: "c1", tokens: 10);
+        var result = Segment.CreateLive(
+            Ulid.NewUlid(), sessionId, "t", Region.Working, "tool_result", Role.Tool,
+            content: new string('x', 8000), seq: 2, createdTurn: 0, toolCallId: "c1", tokens: 2000);
+        result.Externalize(new BlobRef("fs", new string('a', 64), 8000, "text/plain"), "kurz", tokens: 1);
+        var msg = LiveWorking(sessionId, tokens: 10, seq: 3);
+
+        var plan = MajorCollector.PlanCompaction([call, result, msg], policy);
+
+        var ids = plan.SourceSegments.Select(s => s.Id).ToHashSet();
+        Assert.Equal(ids.Contains(call.Id), ids.Contains(result.Id));
+        Assert.Contains(result.Id, ids);
+    }
+
+    // Port-Rückfluss V2: ein Pin schützt seine ganze Unit. Würde nur das gepinnte Segment
+    // ausgenommen, entstünde derselbe Orphan über den Pin statt über die Externalisierung.
+    [Fact]
+    public void PlanCompaction_PinnedSegment_ProtectsItsWholeUnit()
+    {
+        var sessionId = Ulid.NewUlid();
+        var policy = PolicyConfig.Default() with { BudgetTokens = 100_000 };
+
+        var call = Segment.CreateLive(
+            Ulid.NewUlid(), sessionId, "t", Region.Working, "tool_call", Role.Assistant,
+            content: "{}", seq: 1, createdTurn: 0, toolCallId: "c1", tokens: 10);
+        var pinnedResult = Segment.CreateLive(
+            Ulid.NewUlid(), sessionId, "t", Region.Working, "tool_result", Role.Tool,
+            content: "wichtig", seq: 2, createdTurn: 0, toolCallId: "c1", pinned: true, tokens: 10);
+        var a = LiveWorking(sessionId, tokens: 10, seq: 3);
+        var b = LiveWorking(sessionId, tokens: 10, seq: 4);
+
+        var plan = MajorCollector.PlanCompaction([call, pinnedResult, a, b], policy);
+
+        Assert.DoesNotContain(plan.SourceSegments, s => s.Id == call.Id);
+        Assert.DoesNotContain(plan.SourceSegments, s => s.Id == pinnedResult.Id);
+        Assert.Equal(2, plan.SourceSegments.Count);
+    }
 }

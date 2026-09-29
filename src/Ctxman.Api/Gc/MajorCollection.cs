@@ -121,7 +121,7 @@ public sealed class MajorCollection
 
         // Spec §3.3: die Inhalte aus dem Fenster für den LLM-Aufruf aufbereiten.
         var windowItems = plan.SourceSegments
-            .Select(s => new WindowItem(s.Content ?? s.Summary ?? string.Empty, s.Kind))
+            .Select(WindowItem.From)
             .ToList();
 
         // ── Step 1: PROMOTION (Spec §3.3 step 1) ──────────────────────────────────────────────
@@ -177,6 +177,22 @@ public sealed class MajorCollection
         var compactionResult = await _compactionModel.SummarizeAsync(compactionRequest, ct);
 
         var summaryContent = compactionResult.Summary;
+
+        // Ein leeres Summary ist keine Zusammenfassung, sondern ein gescheiterter Aufruf. Liefe die
+        // Transaktion weiter, würden alle Fenster-Segmente compacted und durch ein LEERES Segment
+        // ersetzt — die Major Collection wäre reine Löschung. Behandelt wie ein geworfener
+        // Compaction-Aufruf: keine Mutation, der nächste Lauf versucht es erneut. (Dieselbe Lehre
+        // zog agentkit aus seiner eigenen Kompaktierung: ein 429 im falschen Moment ersetzte dort
+        // den ganzen Verlauf durch eine leere Notiz.)
+        if (string.IsNullOrWhiteSpace(summaryContent))
+        {
+            _logger.LogWarning(
+                "Major collection: session {SessionId} — compaction returned an empty summary; " +
+                "sources left untouched.",
+                sessionId);
+            return;
+        }
+
         var summaryTokens = _tokenCounter.Count(summaryContent);
 
         // ── Step 3: ATOMARE DB-TRANSAKTION (Spec §3.3 step 3) ─────────────────────────────────
@@ -223,7 +239,10 @@ public sealed class MajorCollection
                 tenantId: tenantId,
                 region: Region.Working,
                 kind: "compaction_summary",
-                role: null,
+                // Rolle Pflicht: RenderPlanner.Coalesce überspringt rollenlose Working-Segmente
+                // (nicht message-render-fähig). Mit role: null wären die Quellen compacted UND die
+                // Zusammenfassung unsichtbar — die Compaction wäre de facto reine Löschung.
+                role: Role.User,
                 content: summaryContent,
                 seq: plan.OldestSeq,
                 createdTurn: currentTurn,

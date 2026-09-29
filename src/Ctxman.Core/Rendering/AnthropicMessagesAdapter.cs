@@ -34,9 +34,9 @@ public sealed class AnthropicMessagesAdapter : IProviderAdapter
             .Select(i => ParseToolDef(i.Content))
             .ToList();
 
-        var messages = model.Messages
+        var messages = PairToolResults(model.Messages
             .Select(BuildMessage)
-            .ToList();
+            .ToList());
 
         var requestFragment = new Dictionary<string, object?>
         {
@@ -79,6 +79,93 @@ public sealed class AnthropicMessagesAdapter : IProviderAdapter
             ["content"] = content,
         };
     }
+
+    /// <summary>
+    /// Stellt die Ordnungszusicherung der Anthropic-API her: die <c>tool_result</c>-Blöcke zu einer
+    /// Assistant-Nachricht mit <c>tool_use</c> stehen in der UNMITTELBAR FOLGENDEN Nachricht, und
+    /// dort vorn. Strenger als OpenAI — nicht „irgendwann danach", sondern „als Nächstes".
+    ///
+    /// Auslöser ist derselbe wie beim OpenAI-Adapter (siehe <c>PairToolResponses</c> dort): ein
+    /// nachgereichtes Ergebnis — etwa das synthetische Error-<c>tool_result</c>, mit dem das SDK
+    /// laut I5 offene Units schließt — bekommt die höchste <c>seq</c> und stünde sonst hinter
+    /// allem Späteren. Eine eigene User-Nachricht direkt hinter dem Aufruf erfüllt beide Regeln.
+    ///
+    /// Im Normalfall ist die Ausgabe unverändert: der Planer coalesced nur gleiche Rollen, ein
+    /// <c>tool_result</c> (Rolle Tool) und Nutzertext landen also nie in derselben neutralen
+    /// Nachricht. Verlustfrei: ein <c>tool_result</c> ohne zugehörigen <c>tool_use</c> bleibt an
+    /// seinem Platz.
+    /// </summary>
+    private static List<Dictionary<string, object?>> PairToolResults(
+        List<Dictionary<string, object?>> messages)
+    {
+        var used = messages
+            .SelectMany(Blocks)
+            .Where(b => b.GetValueOrDefault("type") as string == "tool_use")
+            .Select(b => b.GetValueOrDefault("id") as string)
+            .OfType<string>()
+            .ToHashSet(StringComparer.Ordinal);
+
+        string? AnsweredUseId(Dictionary<string, object?> block) =>
+            block.GetValueOrDefault("type") as string == "tool_result"
+            && block.GetValueOrDefault("tool_use_id") is string id
+            && used.Contains(id)
+                ? id
+                : null;
+
+        // Zugeordnete Ergebnisse einsammeln; alles andere bleibt, wo es steht.
+        var results = new Dictionary<string, List<Dictionary<string, object?>>>(StringComparer.Ordinal);
+        foreach (var block in messages.SelectMany(Blocks))
+        {
+            if (AnsweredUseId(block) is { } id)
+            {
+                if (!results.TryGetValue(id, out var bucket))
+                {
+                    bucket = new List<Dictionary<string, object?>>();
+                    results[id] = bucket;
+                }
+
+                bucket.Add(block);
+            }
+        }
+
+        var paired = new List<Dictionary<string, object?>>(messages.Count);
+        foreach (var message in messages)
+        {
+            var blocks = Blocks(message).ToList();
+
+            // Eine Nachricht, die NUR aus zugeordneten Ergebnissen bestand, fällt weg — ihre
+            // Blöcke kommen gleich hinter ihrem Aufruf wieder.
+            var rest = blocks.Where(b => AnsweredUseId(b) is null).ToList();
+            if (rest.Count > 0)
+            {
+                paired.Add(new Dictionary<string, object?>
+                {
+                    ["role"] = message["role"],
+                    ["content"] = rest,
+                });
+            }
+
+            var answerBlocks = blocks
+                .Where(b => b.GetValueOrDefault("type") as string == "tool_use")
+                .Select(b => b.GetValueOrDefault("id") as string)
+                .OfType<string>()
+                .SelectMany(id => results.Remove(id, out var bucket) ? bucket : [])
+                .ToList();
+            if (answerBlocks.Count > 0)
+            {
+                paired.Add(new Dictionary<string, object?>
+                {
+                    ["role"] = "user",
+                    ["content"] = answerBlocks,
+                });
+            }
+        }
+
+        return paired;
+    }
+
+    private static IEnumerable<Dictionary<string, object?>> Blocks(Dictionary<string, object?> message) =>
+        message.GetValueOrDefault("content") as IEnumerable<Dictionary<string, object?>> ?? [];
 
     private static Dictionary<string, object?> BuildContentBlock(RenderContentBlock block) => block.Kind switch
     {

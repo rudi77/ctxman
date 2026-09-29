@@ -74,7 +74,7 @@ public sealed class PromotionService
 
         // Build the window for the LLM — mirror MajorCollection.windowItems construction exactly.
         var windowItems = segments
-            .Select(s => new WindowItem(s.Content ?? s.Summary ?? string.Empty, s.Kind))
+            .Select(WindowItem.From)
             .ToList();
 
         var promotionRequest = new CompactionRequest(
